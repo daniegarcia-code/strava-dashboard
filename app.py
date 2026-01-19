@@ -14,7 +14,7 @@ CLIENT_SECRET = st.secrets["strava_client_secret"]
 # IMPORTANT: This URL must match your deployed app URL exactly.
 # For local testing use: "http://localhost:8501"
 # For Cloud use: "https://your-app-name.streamlit.app"
-REDIRECT_URI = "http://localhost:8501" 
+REDIRECT_URI = "https://strava-dashboard-bavkdzxtyephsasu7k9q7b.streamlit.app" 
 
 def get_auth_url():
     return (
@@ -115,5 +115,6 @@ fig = px.bar(df, x='start_date_local', y='distance_miles', title="Recent Volume"
 st.plotly_chart(fig)
 
 st.dataframe(df[['name', 'start_date_local', 'distance_miles', 'average_watts']])
+
 
 
