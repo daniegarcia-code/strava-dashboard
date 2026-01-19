@@ -3,3 +3,11 @@ pandas
 plotly
 sqlalchemy
 requests
+numpy
+google-generativeai
+
+
+
+
+
+
