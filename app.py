@@ -105,3 +105,4 @@ st.plotly_chart(fig)
 
 st.dataframe(df[['name', 'start_date_local', 'distance_miles', 'average_watts']])
 
+
