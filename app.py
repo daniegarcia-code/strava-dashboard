@@ -11,7 +11,7 @@ st.set_page_config(page_title="Endurance Lab", page_icon="🚴")
 CLIENT_ID = st.secrets["strava"]["client_id"]
 CLIENT_SECRET = st.secrets["strava"]["client_secret"]
 # IMPORTANT: This URL must match what you set in Strava Settings later
-REDIRECT_URI = "https://www.strava.com/oauth/authorize?client_id=YOUR_APP_CLIENT_ID&response_type=code&redirect_uri=https://your-app-name.streamlit.app&approval_prompt=force&scope=activity:read_all" 
+REDIRECT_URI = "https://your-app-name.streamlit.app"
 
 def get_auth_url():
     return (
@@ -104,3 +104,4 @@ st.plotly_chart(fig)
 
 
 st.dataframe(df[['name', 'start_date_local', 'distance_miles', 'average_watts']])
+
