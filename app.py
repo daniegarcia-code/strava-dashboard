@@ -25,7 +25,7 @@ except (KeyError, FileNotFoundError):
     st.stop()
 
 # REDIRECT_URI = "http://localhost:8501" # Uncomment for local testing
-REDIRECT_URI = "https://strava-dashboard-bavkdzxtyephsasu7k9q7b.streamlit.app" 
+REDIRECT_URI = "https://strava-dashboard-f2xuhecncj4hh7tpmpgupx.streamlit.app" 
 
 def get_auth_url():
     return (
@@ -103,3 +103,4 @@ def calculate_training_load(df, ftp):
     if 'average_speed' not in df.columns: df['average_speed'] = 0
     
     df['IF'] = df
+
