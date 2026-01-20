@@ -46,7 +46,7 @@ def exchange_code_for_token(code):
     )
     return res.json()
 
-# --- HELPER: POLYLINE DECODER ---
+# --- HELPER: POLYLINE DECODER (FOR MAPS) ---
 def decode_polyline(polyline_str):
     if not polyline_str: return []
     index, lat, lng = 0, 0, 0
@@ -89,13 +89,12 @@ def fetch_activities(access_token, num_activities=500):
 def fetch_streams(access_token, activity_id):
     url = f"https://www.strava.com/api/v3/activities/{activity_id}/streams"
     headers = {"Authorization": f"Bearer {access_token}"}
-    # ADDED CADENCE AND GRADE TO REQUEST
     params = {"keys": "time,watts,heartrate,velocity_smooth,cadence,grade_smooth", "key_by_type": "true"}
     r = requests.get(url, headers=headers, params=params)
     if r.status_code == 200: return r.json()
     return None
 
-# --- METRICS & CALCULATIONS ---
+# --- METRIC CALCULATION ---
 def calculate_training_load(df, ftp):
     if ftp <= 0: ftp = 200 
     if 'average_watts' not in df.columns: df['average_watts'] = 0
@@ -125,71 +124,72 @@ def calculate_pmc(df):
     pmc_df = pd.DataFrame({'CTL': ctl, 'ATL': atl, 'TSB': tsb})
     return pmc_df.reset_index().rename(columns={'index': 'date'})
 
-def calculate_full_analysis(streams, ftp):
-    """Calculates Power, HR, and Speed metrics."""
+def calculate_advanced_metrics(streams, ftp):
+    """Combines Power, Heart Rate, Zone Distribution, and Speed analysis."""
     metrics = {}
     
-    # 1. Power Metrics
+    # --- 1. POWER METRICS ---
     if 'watts' in streams:
         watts = pd.Series(streams['watts']['data'])
-        rolling_30s = watts.rolling(window=30, min_periods=1).mean()
-        metrics['np'] = np.power(rolling_30s.pow(4).mean(), 0.25)
+        metrics['np'] = np.power(watts.rolling(30).mean().pow(4).mean(), 0.25)
         metrics['avg_pwr'] = watts.mean()
         metrics['vi'] = metrics['np'] / metrics['avg_pwr'] if metrics['avg_pwr'] > 0 else 1.0
         metrics['if'] = metrics['np'] / ftp
         
-        # Power Curve
+        # Power Duration Curve
         durations = [1, 5, 15, 30, 60, 180, 300, 600, 1200]
         metrics['pdc'] = {}
         for d in durations:
             label = f"{int(d/60)}m" if d > 60 else f"{d}s"
-            metrics['pdc'][label] = watts.rolling(window=d).mean().max() if len(watts) > d else 0
+            metrics['pdc'][label] = watts.rolling(d).mean().max() if len(watts) > d else 0
+            
+        # Power Zones (Z1-Z6) - RESTORED
+        zones = [0, 0.55*ftp, 0.75*ftp, 0.90*ftp, 1.05*ftp, 1.20*ftp, 5000]
+        labels = ["Z1 Active Recovery", "Z2 Endurance", "Z3 Tempo", "Z4 Threshold", "Z5 VO2Max", "Z6 Anaerobic"]
+        watts_cut = pd.cut(watts, bins=zones, labels=labels)
+        metrics['zone_dist'] = watts_cut.value_counts(sort=False)
+        
     else:
-        metrics['np'] = None # Flag for no power data
+        metrics['np'] = None
 
-    # 2. Heart Rate Metrics
+    # --- 2. HEART RATE METRICS ---
     if 'heartrate' in streams:
         hr = pd.Series(streams['heartrate']['data'])
         metrics['avg_hr'] = hr.mean()
         metrics['max_hr'] = hr.max()
         
-        # Decoupling (Needs Power & HR)
+        # Decoupling
         if 'watts' in streams:
             half = len(watts) // 2
-            p1, h1 = watts.iloc[:half].mean(), hr.iloc[:half].mean()
-            p2, h2 = watts.iloc[half:].mean(), hr.iloc[half:].mean()
-            if h1 > 0 and h2 > 0:
-                r1, r2 = p1/h1, p2/h2
-                metrics['decoupling'] = (r1 - r2) / r1 * 100
-            else:
-                metrics['decoupling'] = 0
-        else:
-            metrics['decoupling'] = None
+            if half > 0:
+                p1, h1 = watts.iloc[:half].mean(), hr.iloc[:half].mean()
+                p2, h2 = watts.iloc[half:].mean(), hr.iloc[half:].mean()
+                if h1 > 0 and h2 > 0:
+                    r1, r2 = p1/h1, p2/h2
+                    metrics['decoupling'] = (r1 - r2) / r1 * 100
+                else: metrics['decoupling'] = 0
+            else: metrics['decoupling'] = 0
+        else: metrics['decoupling'] = None
     else:
         metrics['avg_hr'] = None
 
-    # 3. Speed & Cadence
+    # --- 3. SPEED & CADENCE ---
     if 'velocity_smooth' in streams:
-        # Convert m/s to mph
-        speed = pd.Series(streams['velocity_smooth']['data']) * 2.23694
+        speed = pd.Series(streams['velocity_smooth']['data']) * 2.23694 # m/s to mph
         metrics['avg_speed'] = speed.mean()
         metrics['max_speed'] = speed.max()
-    else:
-        metrics['avg_speed'] = None
+    else: metrics['avg_speed'] = None
 
     if 'cadence' in streams:
         cad = pd.Series(streams['cadence']['data'])
-        # Filter out zeros for average cadence to be meaningful
-        metrics['avg_cadence'] = cad[cad > 0].mean() 
-    else:
-        metrics['avg_cadence'] = None
+        metrics['avg_cadence'] = cad[cad > 0].mean()
+    else: metrics['avg_cadence'] = None
 
     return metrics
 
 def ask_gemini(metrics, question):
     if not GEMINI_AVAILABLE: return "Gemini API Key not found."
     model = genai.GenerativeModel('gemini-pro')
-    # Safe unpacking for the prompt
     np_val = f"{metrics.get('np', 0):.0f}" if metrics.get('np') else "N/A"
     prompt = f"""
     Analyze this ride data:
@@ -297,22 +297,19 @@ with tab1:
 with tab2:
     st.write("### Single Ride Deep Dive")
     if not df_display.empty:
-        # CREATE DATE LABELS FOR DROPDOWN
+        # DROP DOWN WITH DATES (RESTORED)
         df_display['label'] = df_display['start_date_local'].dt.strftime('%Y-%m-%d') + " - " + df_display['name']
         ride_options = df_display[['label', 'id']].sort_values('label', ascending=False)
-        
-        # DROPDOWN SELECTION (Triggers analysis immediately, no button needed)
         selected_ride_label = st.selectbox("Choose a Ride:", ride_options['label'])
         selected_id = ride_options[ride_options['label'] == selected_ride_label]['id'].values[0]
 
-        # ANALYZE IMMEDIATELY
         with st.spinner("Fetching details..."):
             streams = fetch_streams(st.session_state["access_token"], selected_id)
         
         if streams:
-            data = calculate_full_analysis(streams, ftp_input)
+            data = calculate_advanced_metrics(streams, ftp_input)
             
-            # --- ROW 1: POWER ---
+            # ROW 1: POWER
             st.markdown("#### ⚡ Power Stats")
             if data['np']:
                 c1, c2, c3, c4 = st.columns(4)
@@ -321,43 +318,41 @@ with tab2:
                 c3.metric("Variability (VI)", f"{data['vi']:.2f}")
                 work_kj = df[df['id']==selected_id]['kilojoules'].values[0]
                 c4.metric("Work", f"{work_kj:.0f} kJ")
-            else:
-                st.info("No Power Data for this ride.")
+            else: st.info("No Power Data.")
 
-            # --- ROW 2: HEART RATE ---
+            # ROW 2: HEART RATE
             st.markdown("#### ❤️ Heart Rate Stats")
             if data['avg_hr']:
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Avg HR", f"{data['avg_hr']:.0f} bpm")
                 c2.metric("Max HR", f"{data['max_hr']:.0f} bpm")
-                if data['decoupling']:
-                    c3.metric("Decoupling", f"{data['decoupling']:.1f}%", help="<5% is good. High means fatigue.")
-                else:
-                    c3.metric("Decoupling", "N/A")
-                
-                # Efficiency Factor (Power / HR)
-                if data['np'] and data['avg_hr'] > 0:
-                    ef = data['np'] / data['avg_hr']
-                    c4.metric("Efficiency (EF)", f"{ef:.2f}")
-            else:
-                st.info("No Heart Rate Data.")
+                if data['decoupling']: c3.metric("Decoupling", f"{data['decoupling']:.1f}%")
+                else: c3.metric("Decoupling", "N/A")
+                if data['np'] and data['avg_hr'] > 0: c4.metric("Efficiency (EF)", f"{data['np']/data['avg_hr']:.2f}")
+            else: st.info("No Heart Rate Data.")
 
-            # --- ROW 3: SPEED & CADENCE ---
+            # ROW 3: SPEED & CADENCE
             st.markdown("#### 💨 Speed & Cadence")
             c1, c2, c3, c4 = st.columns(4)
             if data['avg_speed']:
                 c1.metric("Avg Speed", f"{data['avg_speed']:.1f} mph")
                 c2.metric("Max Speed", f"{data['max_speed']:.1f} mph")
-            if data['avg_cadence']:
-                c3.metric("Avg Cadence", f"{data['avg_cadence']:.0f} rpm")
+            if data['avg_cadence']: c3.metric("Avg Cadence", f"{data['avg_cadence']:.0f} rpm")
             
-            # --- CHARTS ---
+            # --- CHARTS (RESTORED ZONES & PDC) ---
             st.divider()
             if data['np']:
-                st.subheader("Power Curve")
-                dur = list(data['pdc'].keys())
-                pwr = list(data['pdc'].values())
-                st.plotly_chart(px.line(x=dur, y=pwr, title="Mean Max Power"), use_container_width=True)
+                col_chart1, col_chart2 = st.columns(2)
+                with col_chart1:
+                    st.subheader("Power Curve")
+                    dur = list(data['pdc'].keys())
+                    pwr = list(data['pdc'].values())
+                    st.plotly_chart(px.line(x=dur, y=pwr, title="Mean Max Power"), use_container_width=True)
+                
+                with col_chart2:
+                    st.subheader("Time in Zones")
+                    if 'zone_dist' in data:
+                        st.plotly_chart(px.bar(data['zone_dist'], orientation='h', title="Power Distribution", labels={'value': 'Seconds', 'index': 'Zone'}), use_container_width=True)
 
             if GEMINI_AVAILABLE and data['np']:
                 st.divider()
@@ -366,11 +361,8 @@ with tab2:
                 if st.button("Ask Coach"):
                     with st.spinner("Thinking..."):
                         st.markdown(ask_gemini(data, q))
-
-        else:
-            st.error("Could not load ride data.")
-    else:
-        st.warning("No rides in selected date range.")
+        else: st.error("Could not load ride data.")
+    else: st.warning("No rides in selected date range.")
 
 with tab3:
     st.subheader("Ride Log")
