@@ -25,7 +25,7 @@ except (KeyError, FileNotFoundError):
     st.stop()
 
 # REDIRECT_URI = "http://localhost:8501" # Uncomment for local testing
-REDIRECT_URI = "https://strava-dashboard-f2xuhecncj4hh7tpmpgupx.streamlit.app" 
+REDIRECT_URI = "https://strava-dashboard-bavkdzxtyephsasu7k9q7b.streamlit.app" 
 
 def get_auth_url():
     return (
@@ -107,6 +107,19 @@ def calculate_training_load(df, ftp):
     df.loc[mask_no_power, 'tss_score'] = (df.loc[mask_no_power, 'moving_time'] / 3600) * 60
     
     df['efficiency_factor'] = df['average_watts'] / df['average_heartrate']
+    
+    # --- ADDED: Variability Index & Speed for Table ---
+    if 'weighted_average_watts' in df.columns:
+        df['variability_index'] = df['weighted_average_watts'] / df['average_watts']
+    else:
+        df['variability_index'] = np.nan
+
+    if 'average_speed' in df.columns:
+        df['average_speed_mph'] = df['average_speed'] * 2.23694
+    else:
+        df['average_speed_mph'] = 0
+    # -------------------------------------------------
+
     df['kilojoules'] = df.get('kilojoules', pd.Series([0]*len(df))).fillna(0)
     return df
 
@@ -320,7 +333,8 @@ with tab1:
 with tab2:
     st.write("### Single Ride Deep Dive")
     if not df_display.empty:
-        df_display['label'] = df_display['start_date_local'].dt.strftime('%Y-%m-%d') + " - " + df_display['name']
+        # --- FIXED: Added Time (%H:%M) to distinguish duplicate names ---
+        df_display['label'] = df_display['start_date_local'].dt.strftime('%Y-%m-%d %H:%M') + " - " + df_display['name']
         ride_options = df_display[['label', 'id']].sort_values('label', ascending=False)
         selected_ride_label = st.selectbox("Choose a Ride:", ride_options['label'])
         selected_id = ride_options[ride_options['label'] == selected_ride_label]['id'].values[0]
@@ -372,7 +386,8 @@ with tab2:
                     if 'zone_dist' in data:
                         st.plotly_chart(px.bar(data['zone_dist'], orientation='h', title="Power Distribution", labels={'value': 'Seconds', 'index': 'Zone'}), use_container_width=True)
 
-            if GEMINI_AVAILABLE and data['np']:
+            # --- FIXED: AI Coach is now available for ALL rides (not just those with power) ---
+            if GEMINI_AVAILABLE:
                 st.divider()
                 st.subheader("🤖 AI Coach")
                 q = st.text_input("Ask Gemini about this ride:", placeholder="How was my pacing?")
@@ -384,6 +399,16 @@ with tab2:
 
 with tab3:
     st.subheader("Ride Log")
-    cols = ['start_date_local', 'name', 'distance_miles', 'average_watts', 'average_heartrate', 'tss_score']
+    # --- FIXED: Added missing metrics (Speed, VI, IF, EF) ---
+    cols = [
+        'start_date_local', 'name', 'distance_miles', 'average_speed_mph', 
+        'average_watts', 'variability_index', 'IF', 'efficiency_factor', 
+        'average_heartrate', 'tss_score'
+    ]
     valid_cols = [c for c in cols if c in df_display.columns]
-    st.dataframe(df_display[valid_cols].sort_values('start_date_local', ascending=False).style.format("{:.1f}", subset=['distance_miles', 'average_watts', 'tss_score']))
+    
+    st.dataframe(
+        df_display[valid_cols]
+        .sort_values('start_date_local', ascending=False)
+        .style.format("{:.2f}", subset=[c for c in ['distance_miles', 'average_speed_mph', 'average_watts', 'variability_index', 'IF', 'efficiency_factor', 'tss_score'] if c in df_display.columns])
+    )
