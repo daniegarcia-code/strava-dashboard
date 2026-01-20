@@ -25,7 +25,7 @@ except (KeyError, FileNotFoundError):
     st.stop()
 
 # REDIRECT_URI = "http://localhost:8501" # Uncomment for local testing
-REDIRECT_URI = "https://strava-dashboard-f2xuhecncj4hh7tpmpgupx.streamlit.app" 
+REDIRECT_URI = "https://strava-dashboard-bavkdzxtyephsasu7k9q7b.streamlit.app" 
 
 def get_auth_url():
     return (
@@ -122,14 +122,11 @@ def calculate_training_load(df, ftp):
 
     df['kilojoules'] = df.get('kilojoules', pd.Series([0]*len(df))).fillna(0)
     
-    # --- ADDED: Device Name Handling ---
-    # Strava sometimes returns 'device_name', sometimes not in summary. 
-    # We create it safely here.
+    # --- Device Name Handling ---
     if 'device_name' not in df.columns:
         df['device_name'] = "Unknown" 
     else:
         df['device_name'] = df['device_name'].fillna("Unknown")
-    # -----------------------------------
     
     return df
 
@@ -343,8 +340,8 @@ with tab1:
 with tab2:
     st.write("### Single Ride Deep Dive")
     if not df_display.empty:
-        # --- FIXED: Added Time (%H:%M) to distinguish duplicate names ---
-        df_display['label'] = df_display['start_date_local'].dt.strftime('%Y-%m-%d %H:%M') + " - " + df_display['name']
+        # --- FIXED: Added Device Name to Label ---
+        df_display['label'] = df_display['start_date_local'].dt.strftime('%Y-%m-%d %H:%M') + " - " + df_display['name'] + " [" + df_display['device_name'].astype(str) + "]"
         ride_options = df_display[['label', 'id']].sort_values('label', ascending=False)
         selected_ride_label = st.selectbox("Choose a Ride:", ride_options['label'])
         selected_id = ride_options[ride_options['label'] == selected_ride_label]['id'].values[0]
@@ -396,7 +393,6 @@ with tab2:
                     if 'zone_dist' in data:
                         st.plotly_chart(px.bar(data['zone_dist'], orientation='h', title="Power Distribution", labels={'value': 'Seconds', 'index': 'Zone'}), use_container_width=True)
 
-            # --- FIXED: AI Coach is now available for ALL rides (not just those with power) ---
             if GEMINI_AVAILABLE:
                 st.divider()
                 st.subheader("🤖 AI Coach")
@@ -409,7 +405,6 @@ with tab2:
 
 with tab3:
     st.subheader("Ride Log")
-    # --- ADDED: device_name to columns ---
     cols = [
         'start_date_local', 'name', 'device_name', 'distance_miles', 'average_speed_mph', 
         'average_watts', 'variability_index', 'IF', 'efficiency_factor', 
