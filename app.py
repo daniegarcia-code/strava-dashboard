@@ -25,7 +25,7 @@ except (KeyError, FileNotFoundError):
     st.stop()
 
 # REDIRECT_URI = "http://localhost:8501" # Uncomment for local testing
-REDIRECT_URI = "https://strava-dashboard-bavkdzxtyephsasu7k9q7b.streamlit.app" 
+REDIRECT_URI = "https://strava-dashboard-f2xuhecncj4hh7tpmpgupx.streamlit.app" 
 
 def get_auth_url():
     return (
@@ -340,7 +340,7 @@ with tab1:
 with tab2:
     st.write("### Single Ride Deep Dive")
     if not df_display.empty:
-        # --- FIXED: Added Device Name to Label ---
+        # --- FIXED: Added Time and Device Name to Label ---
         df_display['label'] = df_display['start_date_local'].dt.strftime('%Y-%m-%d %H:%M') + " - " + df_display['name'] + " [" + df_display['device_name'].astype(str) + "]"
         ride_options = df_display[['label', 'id']].sort_values('label', ascending=False)
         selected_ride_label = st.selectbox("Choose a Ride:", ride_options['label'])
