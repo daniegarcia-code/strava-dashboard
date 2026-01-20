@@ -46,7 +46,7 @@ def exchange_code_for_token(code):
     )
     return res.json()
 
-# --- HELPER: POLYLINE DECODER (FOR MAPS) ---
+# --- HELPER: POLYLINE DECODER ---
 def decode_polyline(polyline_str):
     if not polyline_str: return []
     index, lat, lng = 0, 0, 0
@@ -125,10 +125,8 @@ def calculate_pmc(df):
     return pmc_df.reset_index().rename(columns={'index': 'date'})
 
 def calculate_advanced_metrics(streams, ftp):
-    """Combines Power, Heart Rate, Zone Distribution, and Speed analysis."""
     metrics = {}
     
-    # --- 1. POWER METRICS ---
     if 'watts' in streams:
         watts = pd.Series(streams['watts']['data'])
         metrics['np'] = np.power(watts.rolling(30).mean().pow(4).mean(), 0.25)
@@ -136,29 +134,24 @@ def calculate_advanced_metrics(streams, ftp):
         metrics['vi'] = metrics['np'] / metrics['avg_pwr'] if metrics['avg_pwr'] > 0 else 1.0
         metrics['if'] = metrics['np'] / ftp
         
-        # Power Duration Curve
         durations = [1, 5, 15, 30, 60, 180, 300, 600, 1200]
         metrics['pdc'] = {}
         for d in durations:
             label = f"{int(d/60)}m" if d > 60 else f"{d}s"
             metrics['pdc'][label] = watts.rolling(d).mean().max() if len(watts) > d else 0
             
-        # Power Zones (Z1-Z6) - RESTORED
         zones = [0, 0.55*ftp, 0.75*ftp, 0.90*ftp, 1.05*ftp, 1.20*ftp, 5000]
         labels = ["Z1 Active Recovery", "Z2 Endurance", "Z3 Tempo", "Z4 Threshold", "Z5 VO2Max", "Z6 Anaerobic"]
         watts_cut = pd.cut(watts, bins=zones, labels=labels)
         metrics['zone_dist'] = watts_cut.value_counts(sort=False)
-        
     else:
         metrics['np'] = None
 
-    # --- 2. HEART RATE METRICS ---
     if 'heartrate' in streams:
         hr = pd.Series(streams['heartrate']['data'])
         metrics['avg_hr'] = hr.mean()
         metrics['max_hr'] = hr.max()
         
-        # Decoupling
         if 'watts' in streams:
             half = len(watts) // 2
             if half > 0:
@@ -173,9 +166,8 @@ def calculate_advanced_metrics(streams, ftp):
     else:
         metrics['avg_hr'] = None
 
-    # --- 3. SPEED & CADENCE ---
     if 'velocity_smooth' in streams:
-        speed = pd.Series(streams['velocity_smooth']['data']) * 2.23694 # m/s to mph
+        speed = pd.Series(streams['velocity_smooth']['data']) * 2.23694 
         metrics['avg_speed'] = speed.mean()
         metrics['max_speed'] = speed.max()
     else: metrics['avg_speed'] = None
@@ -187,11 +179,40 @@ def calculate_advanced_metrics(streams, ftp):
 
     return metrics
 
+# --- ROBUST AI FUNCTION (AUTO-DETECT) ---
 def ask_gemini(metrics, question):
     if not GEMINI_AVAILABLE: return "Gemini API Key not found."
-    # UPDATED MODEL NAME BELOW
-    model = genai.GenerativeModel('gemini-1.5-flash')
     
+    # 1. AUTO-DETECT AVAILABLE MODELS
+    try:
+        working_model_name = None
+        # Get list of all models your key has access to
+        all_models = [m.name for m in genai.list_models()]
+        
+        # Priority list (Try newest first, fall back to older)
+        priorities = ['models/gemini-1.5-flash', 'models/gemini-pro', 'models/gemini-1.0-pro']
+        
+        for p in priorities:
+            if p in all_models:
+                working_model_name = p
+                break
+        
+        # If no priority model found, just grab the first valid text generation model
+        if not working_model_name:
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    working_model_name = m.name
+                    break
+        
+        if not working_model_name:
+            return f"Error: No valid Gemini models found. Available: {all_models}"
+            
+        model = genai.GenerativeModel(working_model_name)
+        
+    except Exception as e:
+        return f"Error detecting models: {e}"
+
+    # 2. GENERATE CONTENT
     np_val = f"{metrics.get('np', 0):.0f}" if metrics.get('np') else "N/A"
     prompt = f"""
     Analyze this ride data:
@@ -206,7 +227,7 @@ def ask_gemini(metrics, question):
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"Error: {e}"
+        return f"Error from {working_model_name}: {e}"
 
 # --- APP LOGIC ---
 if "access_token" not in st.session_state:
@@ -299,7 +320,6 @@ with tab1:
 with tab2:
     st.write("### Single Ride Deep Dive")
     if not df_display.empty:
-        # DROP DOWN WITH DATES (RESTORED)
         df_display['label'] = df_display['start_date_local'].dt.strftime('%Y-%m-%d') + " - " + df_display['name']
         ride_options = df_display[['label', 'id']].sort_values('label', ascending=False)
         selected_ride_label = st.selectbox("Choose a Ride:", ride_options['label'])
@@ -311,7 +331,6 @@ with tab2:
         if streams:
             data = calculate_advanced_metrics(streams, ftp_input)
             
-            # ROW 1: POWER
             st.markdown("#### ⚡ Power Stats")
             if data['np']:
                 c1, c2, c3, c4 = st.columns(4)
@@ -322,7 +341,6 @@ with tab2:
                 c4.metric("Work", f"{work_kj:.0f} kJ")
             else: st.info("No Power Data.")
 
-            # ROW 2: HEART RATE
             st.markdown("#### ❤️ Heart Rate Stats")
             if data['avg_hr']:
                 c1, c2, c3, c4 = st.columns(4)
@@ -333,7 +351,6 @@ with tab2:
                 if data['np'] and data['avg_hr'] > 0: c4.metric("Efficiency (EF)", f"{data['np']/data['avg_hr']:.2f}")
             else: st.info("No Heart Rate Data.")
 
-            # ROW 3: SPEED & CADENCE
             st.markdown("#### 💨 Speed & Cadence")
             c1, c2, c3, c4 = st.columns(4)
             if data['avg_speed']:
@@ -341,7 +358,6 @@ with tab2:
                 c2.metric("Max Speed", f"{data['max_speed']:.1f} mph")
             if data['avg_cadence']: c3.metric("Avg Cadence", f"{data['avg_cadence']:.0f} rpm")
             
-            # --- CHARTS (RESTORED ZONES & PDC) ---
             st.divider()
             if data['np']:
                 col_chart1, col_chart2 = st.columns(2)
@@ -371,4 +387,3 @@ with tab3:
     cols = ['start_date_local', 'name', 'distance_miles', 'average_watts', 'average_heartrate', 'tss_score']
     valid_cols = [c for c in cols if c in df_display.columns]
     st.dataframe(df_display[valid_cols].sort_values('start_date_local', ascending=False).style.format("{:.1f}", subset=['distance_miles', 'average_watts', 'tss_score']))
-
