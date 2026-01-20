@@ -25,7 +25,7 @@ except (KeyError, FileNotFoundError):
     st.stop()
 
 # REDIRECT_URI = "http://localhost:8501" # Uncomment for local testing
-REDIRECT_URI = "https://strava-dashboard-bavkdzxtyephsasu7k9q7b.streamlit.app" 
+REDIRECT_URI = "https://strava-dashboard-f2xuhecncj4hh7tpmpgupx.streamlit.app" 
 
 def get_auth_url():
     return (
@@ -371,3 +371,4 @@ with tab3:
     cols = ['start_date_local', 'name', 'distance_miles', 'average_watts', 'average_heartrate', 'tss_score']
     valid_cols = [c for c in cols if c in df_display.columns]
     st.dataframe(df_display[valid_cols].sort_values('start_date_local', ascending=False).style.format("{:.1f}", subset=['distance_miles', 'average_watts', 'tss_score']))
+
