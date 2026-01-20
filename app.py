@@ -97,8 +97,10 @@ def fetch_streams(access_token, activity_id):
 # --- METRIC CALCULATION ---
 def calculate_training_load(df, ftp):
     if ftp <= 0: ftp = 200 
+    
     if 'average_watts' not in df.columns: df['average_watts'] = 0
     if 'average_heartrate' not in df.columns: df['average_heartrate'] = 0
+    if 'average_speed' not in df.columns: df['average_speed'] = 0
     
     df['IF'] = df['average_watts'] / ftp
     df['tss_score'] = (df['moving_time'] * df['average_watts'] * df['IF'] * 1.05) / (ftp * 3600) * 100
@@ -108,7 +110,6 @@ def calculate_training_load(df, ftp):
     
     df['efficiency_factor'] = df['average_watts'] / df['average_heartrate']
     
-    # --- ADDED: Variability Index & Speed for Table ---
     if 'weighted_average_watts' in df.columns:
         df['variability_index'] = df['weighted_average_watts'] / df['average_watts']
     else:
@@ -118,9 +119,18 @@ def calculate_training_load(df, ftp):
         df['average_speed_mph'] = df['average_speed'] * 2.23694
     else:
         df['average_speed_mph'] = 0
-    # -------------------------------------------------
 
     df['kilojoules'] = df.get('kilojoules', pd.Series([0]*len(df))).fillna(0)
+    
+    # --- ADDED: Device Name Handling ---
+    # Strava sometimes returns 'device_name', sometimes not in summary. 
+    # We create it safely here.
+    if 'device_name' not in df.columns:
+        df['device_name'] = "Unknown" 
+    else:
+        df['device_name'] = df['device_name'].fillna("Unknown")
+    # -----------------------------------
+    
     return df
 
 def calculate_pmc(df):
@@ -399,9 +409,9 @@ with tab2:
 
 with tab3:
     st.subheader("Ride Log")
-    # --- FIXED: Added missing metrics (Speed, VI, IF, EF) ---
+    # --- ADDED: device_name to columns ---
     cols = [
-        'start_date_local', 'name', 'distance_miles', 'average_speed_mph', 
+        'start_date_local', 'name', 'device_name', 'distance_miles', 'average_speed_mph', 
         'average_watts', 'variability_index', 'IF', 'efficiency_factor', 
         'average_heartrate', 'tss_score'
     ]
@@ -412,4 +422,3 @@ with tab3:
         .sort_values('start_date_local', ascending=False)
         .style.format("{:.2f}", subset=[c for c in ['distance_miles', 'average_speed_mph', 'average_watts', 'variability_index', 'IF', 'efficiency_factor', 'tss_score'] if c in df_display.columns])
     )
-
