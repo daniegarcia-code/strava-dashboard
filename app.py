@@ -189,7 +189,9 @@ def calculate_advanced_metrics(streams, ftp):
 
 def ask_gemini(metrics, question):
     if not GEMINI_AVAILABLE: return "Gemini API Key not found."
-    model = genai.GenerativeModel('gemini-pro')
+    # UPDATED MODEL NAME BELOW
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    
     np_val = f"{metrics.get('np', 0):.0f}" if metrics.get('np') else "N/A"
     prompt = f"""
     Analyze this ride data:
@@ -369,3 +371,4 @@ with tab3:
     cols = ['start_date_local', 'name', 'distance_miles', 'average_watts', 'average_heartrate', 'tss_score']
     valid_cols = [c for c in cols if c in df_display.columns]
     st.dataframe(df_display[valid_cols].sort_values('start_date_local', ascending=False).style.format("{:.1f}", subset=['distance_miles', 'average_watts', 'tss_score']))
+
