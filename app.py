@@ -25,7 +25,7 @@ except (KeyError, FileNotFoundError):
     st.stop()
 
 # REDIRECT_URI = "http://localhost:8501" # Uncomment for local testing
-REDIRECT_URI = "https://strava-dashboard-bavkdzxtyephsasu7k9q7b.streamlit.app" 
+REDIRECT_URI = "https://strava-dashboard-f2xuhecncj4hh7tpmpgupx.streamlit.app" 
 
 def get_auth_url():
     return (
@@ -189,24 +189,30 @@ def calculate_advanced_metrics(streams, ftp):
 
 def ask_gemini(metrics, question):
     if not GEMINI_AVAILABLE: return "Gemini API Key not found."
-    # UPDATED MODEL NAME BELOW
+    
+    # We use 'gemini-1.5-flash' which is the current standard.
+    # If this still fails after updating requirements, try 'gemini-1.0-pro'
     model = genai.GenerativeModel('gemini-1.5-flash')
     
+    # Safe unpacking for the prompt
     np_val = f"{metrics.get('np', 0):.0f}" if metrics.get('np') else "N/A"
     prompt = f"""
-    Analyze this ride data:
-    - NP: {np_val} W
-    - IF: {metrics.get('if', 0):.2f}
-    - VI: {metrics.get('vi', 0):.2f}
-    - Decoupling: {metrics.get('decoupling', 0):.1f}%
-    - Avg HR: {metrics.get('avg_hr', 0):.0f} bpm
+    You are an expert cycling coach. Analyze this ride data:
+    - Normalized Power (NP): {np_val} W
+    - Intensity Factor (IF): {metrics.get('if', 0):.2f}
+    - Variability Index (VI): {metrics.get('vi', 0):.2f}
+    - Aerobic Decoupling: {metrics.get('decoupling', 0):.1f}%
+    - Avg Heart Rate: {metrics.get('avg_hr', 0):.0f} bpm
+    
     User Question: "{question}"
+    
+    Provide a short, helpful answer based on the metrics above.
     """
     try:
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"Error: {e}"
+        return f"Error from Gemini: {e}"
 
 # --- APP LOGIC ---
 if "access_token" not in st.session_state:
@@ -371,3 +377,4 @@ with tab3:
     cols = ['start_date_local', 'name', 'distance_miles', 'average_watts', 'average_heartrate', 'tss_score']
     valid_cols = [c for c in cols if c in df_display.columns]
     st.dataframe(df_display[valid_cols].sort_values('start_date_local', ascending=False).style.format("{:.1f}", subset=['distance_miles', 'average_watts', 'tss_score']))
+
