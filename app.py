@@ -98,16 +98,15 @@ def fetch_streams(access_token, activity_id):
 def calculate_training_load(df, ftp):
     if ftp <= 0: ftp = 200 
     
-    # Ensure columns exist
     if 'average_watts' not in df.columns: df['average_watts'] = 0
     if 'average_heartrate' not in df.columns: df['average_heartrate'] = 0
     if 'average_speed' not in df.columns: df['average_speed'] = 0
     
-    # --- FIXED: Force numeric types to prevent math errors ---
+    # --- FIXED: Force columns to numeric to prevent chart errors ---
     df['average_watts'] = pd.to_numeric(df['average_watts'], errors='coerce').fillna(0)
     df['average_heartrate'] = pd.to_numeric(df['average_heartrate'], errors='coerce').fillna(0)
     df['moving_time'] = pd.to_numeric(df['moving_time'], errors='coerce').fillna(0)
-    # --------------------------------------------------------
+    # -------------------------------------------------------------
 
     df['IF'] = df['average_watts'] / ftp
     df['tss_score'] = (df['moving_time'] * df['average_watts'] * df['IF'] * 1.05) / (ftp * 3600) * 100
@@ -129,7 +128,6 @@ def calculate_training_load(df, ftp):
 
     df['kilojoules'] = df.get('kilojoules', pd.Series([0]*len(df))).fillna(0)
     
-    # --- Device Name Handling ---
     if 'device_name' not in df.columns:
         df['device_name'] = "Unknown" 
     else:
@@ -138,29 +136,25 @@ def calculate_training_load(df, ftp):
     return df
 
 def calculate_pmc(df):
-    # Sort data first
     df = df.sort_values('start_date_local', ascending=True)
     
-    # --- FIXED: Robust Date Handling ---
-    # Convert string to datetime objects first
+    # --- FIXED: Robust Date and Numeric handling ---
+    # Ensure date is datetime object
     df['start_date_local'] = pd.to_datetime(df['start_date_local'])
-    
-    # Remove timezone info safely
+    # Safely remove timezone info
     df['date_clean'] = df['start_date_local'].apply(lambda x: x.replace(tzinfo=None) if pd.notnull(x) else x)
     df = df.set_index('date_clean')
     
-    # --- FIXED: Force TSS to Numeric ---
-    # This prevents the chart from being flat if "None" strings exist in data
+    # Ensure TSS is numeric before summing (crucial fix for flat line)
     df['tss_score'] = pd.to_numeric(df['tss_score'], errors='coerce').fillna(0)
     
     if df.empty:
         return pd.DataFrame({'date': [], 'CTL': [], 'ATL': [], 'TSB': []})
+    # -----------------------------------------------
 
-    # Resample daily
     full_idx = pd.date_range(start=df.index.min(), end=df.index.max(), freq='D')
     daily_tss = df['tss_score'].resample('D').sum().reindex(full_idx, fill_value=0)
     
-    # Calculate Metrics
     ctl = daily_tss.ewm(span=42, adjust=False).mean()
     atl = daily_tss.ewm(span=7, adjust=False).mean()
     tsb = ctl - atl
@@ -178,7 +172,6 @@ def calculate_advanced_metrics(streams, ftp):
         metrics['vi'] = metrics['np'] / metrics['avg_pwr'] if metrics['avg_pwr'] > 0 else 1.0
         metrics['if'] = metrics['np'] / ftp
         
-        # Extended Power Curve
         std_durations = [1, 5, 15, 30, 60, 180, 300, 600, 1200, 1800, 2700, 3600, 5400, 7200, 10800, 14400, 18000]
         metrics['pdc'] = {}
         for d in std_durations:
@@ -230,7 +223,6 @@ def calculate_advanced_metrics(streams, ftp):
 
     return metrics
 
-# --- ROBUST AI FUNCTION ---
 def ask_gemini(metrics, streams, question):
     if not GEMINI_AVAILABLE: return "Gemini API Key not found."
     
@@ -258,7 +250,6 @@ def ask_gemini(metrics, streams, question):
     except Exception as e:
         return f"Error detecting models: {e}"
 
-    # CSV Generation
     csv_context = ""
     try:
         raw_data = {}
@@ -275,7 +266,6 @@ def ask_gemini(metrics, streams, question):
     except Exception as e:
         csv_context = f"[Error processing raw data: {e}]"
 
-    # Safe get
     safe_get = lambda k: metrics.get(k) or 0
     np_val = f"{safe_get('np'):.0f}" if metrics.get('np') else "N/A"
     
@@ -429,7 +419,6 @@ with tab2:
             
             st.divider()
             
-            # --- CSV Download Button ---
             try:
                 export_data = {}
                 for k, v in streams.items():
@@ -449,7 +438,6 @@ with tab2:
                     )
             except Exception as e:
                 st.info(f"CSV download not available for this activity type.")
-            # ----------------------------------
 
             if data['np']:
                 col_chart1, col_chart2 = st.columns(2)
