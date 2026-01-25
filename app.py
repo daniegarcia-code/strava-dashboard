@@ -199,17 +199,14 @@ def calculate_advanced_metrics(streams, ftp):
 
     return metrics
 
-# --- ROBUST AI FUNCTION (AUTO-DETECT) ---
+# --- ROBUST AI FUNCTION (AUTO-DETECT & ERROR SAFE) ---
 def ask_gemini(metrics, question):
     if not GEMINI_AVAILABLE: return "Gemini API Key not found."
     
     # 1. AUTO-DETECT AVAILABLE MODELS
     try:
         working_model_name = None
-        # Get list of all models your key has access to
         all_models = [m.name for m in genai.list_models()]
-        
-        # Priority list (Try newest first, fall back to older)
         priorities = ['models/gemini-1.5-flash', 'models/gemini-pro', 'models/gemini-1.0-pro']
         
         for p in priorities:
@@ -217,7 +214,6 @@ def ask_gemini(metrics, question):
                 working_model_name = p
                 break
         
-        # If no priority model found, just grab the first valid text generation model
         if not working_model_name:
             for m in genai.list_models():
                 if 'generateContent' in m.supported_generation_methods:
@@ -232,11 +228,10 @@ def ask_gemini(metrics, question):
     except Exception as e:
         return f"Error detecting models: {e}"
 
-    # 2. GENERATE CONTENT (FIXED FOR NONE TYPE ERROR)
-    # Using safe_get to ensure we always have a number (0) if data is missing
+    # 2. GENERATE CONTENT (FIXED: Safe Handling of None values)
+    # Using 'or 0' prevents NoneType formatting errors
     safe_get = lambda k: metrics.get(k) or 0
     
-    # NP Handling
     np_val = f"{safe_get('np'):.0f}" if metrics.get('np') else "N/A"
     
     prompt = f"""
@@ -422,4 +417,3 @@ with tab3:
         .sort_values('start_date_local', ascending=False)
         .style.format("{:.2f}", subset=[c for c in ['distance_miles', 'average_speed_mph', 'average_watts', 'variability_index', 'IF', 'efficiency_factor', 'tss_score'] if c in df_display.columns])
     )
-
