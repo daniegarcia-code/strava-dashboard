@@ -98,10 +98,17 @@ def fetch_streams(access_token, activity_id):
 def calculate_training_load(df, ftp):
     if ftp <= 0: ftp = 200 
     
+    # Ensure columns exist
     if 'average_watts' not in df.columns: df['average_watts'] = 0
     if 'average_heartrate' not in df.columns: df['average_heartrate'] = 0
     if 'average_speed' not in df.columns: df['average_speed'] = 0
     
+    # --- FIXED: Force numeric types to prevent math errors ---
+    df['average_watts'] = pd.to_numeric(df['average_watts'], errors='coerce').fillna(0)
+    df['average_heartrate'] = pd.to_numeric(df['average_heartrate'], errors='coerce').fillna(0)
+    df['moving_time'] = pd.to_numeric(df['moving_time'], errors='coerce').fillna(0)
+    # --------------------------------------------------------
+
     df['IF'] = df['average_watts'] / ftp
     df['tss_score'] = (df['moving_time'] * df['average_watts'] * df['IF'] * 1.05) / (ftp * 3600) * 100
     
@@ -131,12 +138,29 @@ def calculate_training_load(df, ftp):
     return df
 
 def calculate_pmc(df):
+    # Sort data first
     df = df.sort_values('start_date_local', ascending=True)
-    df['date_clean'] = df['start_date_local'].dt.tz_localize(None)
+    
+    # --- FIXED: Robust Date Handling ---
+    # Convert string to datetime objects first
+    df['start_date_local'] = pd.to_datetime(df['start_date_local'])
+    
+    # Remove timezone info safely
+    df['date_clean'] = df['start_date_local'].apply(lambda x: x.replace(tzinfo=None) if pd.notnull(x) else x)
     df = df.set_index('date_clean')
+    
+    # --- FIXED: Force TSS to Numeric ---
+    # This prevents the chart from being flat if "None" strings exist in data
+    df['tss_score'] = pd.to_numeric(df['tss_score'], errors='coerce').fillna(0)
+    
+    if df.empty:
+        return pd.DataFrame({'date': [], 'CTL': [], 'ATL': [], 'TSB': []})
+
+    # Resample daily
     full_idx = pd.date_range(start=df.index.min(), end=df.index.max(), freq='D')
     daily_tss = df['tss_score'].resample('D').sum().reindex(full_idx, fill_value=0)
     
+    # Calculate Metrics
     ctl = daily_tss.ewm(span=42, adjust=False).mean()
     atl = daily_tss.ewm(span=7, adjust=False).mean()
     tsb = ctl - atl
@@ -154,19 +178,14 @@ def calculate_advanced_metrics(streams, ftp):
         metrics['vi'] = metrics['np'] / metrics['avg_pwr'] if metrics['avg_pwr'] > 0 else 1.0
         metrics['if'] = metrics['np'] / ftp
         
-        # List of durations to calculate (in seconds)
+        # Extended Power Curve
         std_durations = [1, 5, 15, 30, 60, 180, 300, 600, 1200, 1800, 2700, 3600, 5400, 7200, 10800, 14400, 18000]
         metrics['pdc'] = {}
         for d in std_durations:
-            # Format Label
-            if d >= 3600:
-                label = f"{d/3600:.1f}h"
-            elif d >= 60:
-                label = f"{int(d/60)}m"
-            else:
-                label = f"{d}s"
+            if d >= 3600: label = f"{d/3600:.1f}h"
+            elif d >= 60: label = f"{int(d/60)}m"
+            else: label = f"{d}s"
             
-            # Calculate only if ride is long enough
             if len(watts) > d:
                 metrics['pdc'][label] = watts.rolling(window=d).mean().max()
             else:
@@ -211,11 +230,10 @@ def calculate_advanced_metrics(streams, ftp):
 
     return metrics
 
-# --- ROBUST AI FUNCTION (AUTO-DETECT & ERROR SAFE & FULL DATA) ---
-def ask_gemini(metrics, streams, question): # Added streams arg
+# --- ROBUST AI FUNCTION ---
+def ask_gemini(metrics, streams, question):
     if not GEMINI_AVAILABLE: return "Gemini API Key not found."
     
-    # 1. AUTO-DETECT AVAILABLE MODELS
     try:
         working_model_name = None
         all_models = [m.name for m in genai.list_models()]
@@ -240,49 +258,39 @@ def ask_gemini(metrics, streams, question): # Added streams arg
     except Exception as e:
         return f"Error detecting models: {e}"
 
-    # 2. PREPARE RAW DATA (CSV FORMAT) FOR AI
+    # CSV Generation
     csv_context = ""
     try:
-        # Build dictionary from streams
         raw_data = {}
         if streams:
             for key, val in streams.items():
                 if 'data' in val:
                     raw_data[key] = val['data']
             
-            # Ensure equal lengths for DataFrame creation
             if raw_data:
                 min_len = min(len(v) for v in raw_data.values())
-                # Truncate to matching length
                 raw_data_synced = {k: v[:min_len] for k, v in raw_data.items()}
-                
-                # Create DataFrame and stringify
-                df_context = pd.DataFrame(raw_data_synced)
-                # We limit rows if huge, but 1.5 Flash handles ~1M tokens, 
-                # so full ride data (e.g. 10k-20k rows) is usually fine.
-                csv_context = df_context.to_csv(index=False)
+                csv_df = pd.DataFrame(raw_data_synced)
+                csv_context = csv_df.to_csv(index=False)
     except Exception as e:
         csv_context = f"[Error processing raw data: {e}]"
 
-    # 3. GENERATE CONTENT
+    # Safe get
     safe_get = lambda k: metrics.get(k) or 0
     np_val = f"{safe_get('np'):.0f}" if metrics.get('np') else "N/A"
     
     prompt = f"""
-    You are an expert cycling coach. Analyze this ride data.
-    
-    ### Ride Summary Metrics:
+    Analyze this ride data:
     - NP: {np_val} W
     - IF: {safe_get('if'):.2f}
     - VI: {safe_get('vi'):.2f}
     - Decoupling: {safe_get('decoupling'):.1f}%
     - Avg HR: {safe_get('avg_hr'):.0f} bpm
     
-    ### Full Second-by-Second Data (CSV):
+    Full Data (CSV):
     {csv_context}
     
-    ### User Question:
-    "{question}"
+    User Question: "{question}"
     """
     try:
         response = model.generate_content(prompt)
@@ -462,7 +470,6 @@ with tab2:
                 q = st.text_input("Ask Gemini about this ride:", placeholder="How was my pacing?")
                 if st.button("Ask Coach"):
                     with st.spinner("Thinking..."):
-                        # Updated call passing streams
                         st.markdown(ask_gemini(data, streams, q))
         else: st.error("Could not load ride data.")
     else: st.warning("No rides in selected date range.")
