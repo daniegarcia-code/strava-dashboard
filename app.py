@@ -99,10 +99,10 @@ def calculate_training_load(df, ftp):
     if ftp <= 0: ftp = 200 
     
     # Ensure columns exist
-    if 'average_watts' not in df.columns: df['average_watts'] = 0
-    if 'average_heartrate' not in df.columns: df['average_heartrate'] = 0
-    if 'average_speed' not in df.columns: df['average_speed'] = 0
-    
+    for col in ['average_watts', 'average_heartrate', 'average_speed', 'moving_time']:
+        if col not in df.columns:
+            df[col] = 0.0
+            
     # Force numeric types to prevent math errors
     df['average_watts'] = pd.to_numeric(df['average_watts'], errors='coerce').fillna(0)
     df['average_heartrate'] = pd.to_numeric(df['average_heartrate'], errors='coerce').fillna(0)
@@ -116,7 +116,7 @@ def calculate_training_load(df, ftp):
     mask_zero_tss = (df['tss_score'].fillna(0) <= 0.1) & (df['moving_time'] > 0)
     df.loc[mask_zero_tss, 'tss_score'] = (df.loc[mask_zero_tss, 'moving_time'] / 3600) * 60
     
-    # 3. Final cleanup
+    # 3. Final cleanup of TSS column
     df['tss_score'] = df['tss_score'].fillna(0)
 
     df['efficiency_factor'] = df['average_watts'] / df['average_heartrate']
@@ -142,7 +142,7 @@ def calculate_training_load(df, ftp):
 
 def calculate_pmc(df):
     # --- FIXED: Robust Date Processing ---
-    # 1. Convert to UTC datetime to handle mixed timezones safely
+    # 1. Convert to UTC datetime, coercing errors to NaT
     df['start_date_local'] = pd.to_datetime(df['start_date_local'], utc=True, errors='coerce')
     
     # 2. Drop rows where date parsing failed
@@ -152,16 +152,21 @@ def calculate_pmc(df):
         return pd.DataFrame({'date': [], 'CTL': [], 'ATL': [], 'TSB': []})
 
     # 3. Normalize to just the Date (Midnight) for grouping
-    df['date_clean'] = df['start_date_local'].dt.normalize()
+    # We use .dt.date first to strip time, then convert back to datetime for indexing
+    df['date_clean'] = pd.to_datetime(df['start_date_local'].dt.date)
     
-    # 4. Group by Date and Sum TSS (Handles multiple rides per day)
+    # 4. Ensure TSS is numeric
+    df['tss_score'] = pd.to_numeric(df['tss_score'], errors='coerce').fillna(0)
+
+    # 5. Group by Date and Sum TSS (Handles multiple rides per day)
     daily_tss = df.groupby('date_clean')['tss_score'].sum()
     
-    # 5. Create a continuous date range (fill missing days with 0)
-    idx = pd.date_range(start=daily_tss.index.min(), end=daily_tss.index.max(), freq='D')
-    daily_tss = daily_tss.reindex(idx, fill_value=0)
+    # 6. Create a continuous date range (fill missing days with 0)
+    if not daily_tss.empty:
+        idx = pd.date_range(start=daily_tss.index.min(), end=daily_tss.index.max(), freq='D')
+        daily_tss = daily_tss.reindex(idx, fill_value=0)
     
-    # 6. Calculate Metrics (EWMA)
+    # 7. Calculate Metrics (EWMA)
     ctl = daily_tss.ewm(span=42, adjust=False).mean()
     atl = daily_tss.ewm(span=7, adjust=False).mean()
     tsb = ctl - atl
