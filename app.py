@@ -154,11 +154,24 @@ def calculate_advanced_metrics(streams, ftp):
         metrics['vi'] = metrics['np'] / metrics['avg_pwr'] if metrics['avg_pwr'] > 0 else 1.0
         metrics['if'] = metrics['np'] / ftp
         
-        durations = [1, 5, 15, 30, 60, 180, 300, 600, 1200]
+        # --- FIXED: Extended Power Curve Durations (up to 5 hours) ---
+        # List of durations to calculate (in seconds)
+        std_durations = [1, 5, 15, 30, 60, 180, 300, 600, 1200, 1800, 2700, 3600, 5400, 7200, 10800, 14400, 18000]
         metrics['pdc'] = {}
-        for d in durations:
-            label = f"{int(d/60)}m" if d > 60 else f"{d}s"
-            metrics['pdc'][label] = watts.rolling(d).mean().max() if len(watts) > d else 0
+        for d in std_durations:
+            # Format Label
+            if d >= 3600:
+                label = f"{d/3600:.1f}h"
+            elif d >= 60:
+                label = f"{int(d/60)}m"
+            else:
+                label = f"{d}s"
+            
+            # Calculate only if ride is long enough
+            if len(watts) > d:
+                metrics['pdc'][label] = watts.rolling(window=d).mean().max()
+            else:
+                pass # Don't add points longer than the ride
             
         zones = [0, 0.55*ftp, 0.75*ftp, 0.90*ftp, 1.05*ftp, 1.20*ftp, 5000]
         labels = ["Z1 Active Recovery", "Z2 Endurance", "Z3 Tempo", "Z4 Threshold", "Z5 VO2Max", "Z6 Anaerobic"]
@@ -203,7 +216,6 @@ def calculate_advanced_metrics(streams, ftp):
 def ask_gemini(metrics, question):
     if not GEMINI_AVAILABLE: return "Gemini API Key not found."
     
-    # 1. AUTO-DETECT AVAILABLE MODELS
     try:
         working_model_name = None
         all_models = [m.name for m in genai.list_models()]
@@ -228,8 +240,7 @@ def ask_gemini(metrics, question):
     except Exception as e:
         return f"Error detecting models: {e}"
 
-    # 2. GENERATE CONTENT (FIXED: Safe Handling of None values)
-    # Using 'or 0' prevents NoneType formatting errors
+    # --- FIXED: Safe Handling of None values for AI Coach ---
     safe_get = lambda k: metrics.get(k) or 0
     
     np_val = f"{safe_get('np'):.0f}" if metrics.get('np') else "N/A"
@@ -340,7 +351,6 @@ with tab1:
 with tab2:
     st.write("### Single Ride Deep Dive")
     if not df_display.empty:
-        # --- FIXED: Added Time and Device Name to Label ---
         df_display['label'] = df_display['start_date_local'].dt.strftime('%Y-%m-%d %H:%M') + " - " + df_display['name'] + " [" + df_display['device_name'].astype(str) + "]"
         ride_options = df_display[['label', 'id']].sort_values('label', ascending=False)
         selected_ride_label = st.selectbox("Choose a Ride:", ride_options['label'])
@@ -380,6 +390,31 @@ with tab2:
             if data['avg_cadence']: c3.metric("Avg Cadence", f"{data['avg_cadence']:.0f} rpm")
             
             st.divider()
+            
+            # --- FIXED: CSV Download Button ---
+            try:
+                # Prepare CSV dataframe from streams
+                export_data = {}
+                for k, v in streams.items():
+                    if 'data' in v:
+                        export_data[k] = v['data']
+                
+                # Check for length consistency (basic)
+                lengths = [len(v) for v in export_data.values()]
+                if lengths and all(x == lengths[0] for x in lengths):
+                    csv_df = pd.DataFrame(export_data)
+                    csv_file = csv_df.to_csv(index=False).encode('utf-8')
+                    
+                    st.download_button(
+                        label="Download Ride Data (CSV)",
+                        data=csv_file,
+                        file_name=f"ride_{selected_id}.csv",
+                        mime="text/csv",
+                    )
+            except Exception as e:
+                st.info(f"CSV download not available for this activity type.")
+            # ----------------------------------
+
             if data['np']:
                 col_chart1, col_chart2 = st.columns(2)
                 with col_chart1:
