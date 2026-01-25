@@ -144,31 +144,22 @@ def calculate_training_load(df, ftp):
 def calculate_pmc(df):
     df = df.sort_values('start_date_local', ascending=True)
     
-    # --- FIXED: Robust Date Processing ---
-    # 1. Convert to UTC datetime, coercing errors to NaT
+    # Robust Date Processing
     df['start_date_local'] = pd.to_datetime(df['start_date_local'], utc=True, errors='coerce')
-    
-    # 2. Drop rows where date parsing failed
     df = df.dropna(subset=['start_date_local'])
     
     if df.empty:
         return pd.DataFrame({'date': [], 'CTL': [], 'ATL': [], 'TSB': []})
 
-    # 3. Normalize to just the Date (Midnight) for grouping
     df['date_clean'] = pd.to_datetime(df['start_date_local'].dt.date)
-    
-    # 4. Ensure TSS is numeric
     df['tss_score'] = pd.to_numeric(df['tss_score'], errors='coerce').fillna(0)
 
-    # 5. Group by Date and Sum TSS (Handles multiple rides per day)
     daily_tss = df.groupby('date_clean')['tss_score'].sum()
     
-    # 6. Create a continuous date range (fill missing days with 0)
     if not daily_tss.empty:
         idx = pd.date_range(start=daily_tss.index.min(), end=daily_tss.index.max(), freq='D')
         daily_tss = daily_tss.reindex(idx, fill_value=0)
     
-    # 7. Calculate Metrics (EWMA)
     ctl = daily_tss.ewm(span=42, adjust=False).mean()
     atl = daily_tss.ewm(span=7, adjust=False).mean()
     tsb = ctl - atl
@@ -176,7 +167,8 @@ def calculate_pmc(df):
     pmc_df = pd.DataFrame({'CTL': ctl, 'ATL': atl, 'TSB': tsb})
     return pmc_df.reset_index().rename(columns={'index': 'date'})
 
-def calculate_advanced_metrics(streams, ftp):
+# --- UPDATED: Accepted Max HR for Zone calc ---
+def calculate_advanced_metrics(streams, ftp, max_hr):
     metrics = {}
     
     if 'watts' in streams:
@@ -210,6 +202,19 @@ def calculate_advanced_metrics(streams, ftp):
         hr = pd.Series(streams['heartrate']['data'])
         metrics['avg_hr'] = hr.mean()
         metrics['max_hr'] = hr.max()
+        
+        # --- NEW: Heart Rate Zone Calculation (Percentages) ---
+        if max_hr > 0:
+            # 5 Zones: Z1 <60%, Z2 60-70%, Z3 70-80%, Z4 80-90%, Z5 >90%
+            hr_zones = [0, 0.60*max_hr, 0.70*max_hr, 0.80*max_hr, 0.90*max_hr, 300]
+            hr_labels = ["Z1 Recovery", "Z2 Endurance", "Z3 Tempo", "Z4 Threshold", "Z5 Anaerobic"]
+            hr_cut = pd.cut(hr, bins=hr_zones, labels=hr_labels)
+            
+            # Calculate percentages
+            total_seconds = len(hr)
+            if total_seconds > 0:
+                metrics['hr_zone_dist'] = (hr_cut.value_counts(sort=False) / total_seconds) * 100
+        # -------------------------------------------------------
         
         if 'watts' in streams:
             half = len(watts) // 2
@@ -338,6 +343,8 @@ df['distance_miles'] = df['distance'] / 1609.34
 with st.sidebar:
     st.header("⚙️ Settings")
     ftp_input = st.number_input("Your FTP (Watts)", min_value=100, max_value=500, value=250)
+    # --- ADDED: Max HR Input ---
+    max_hr_input = st.number_input("Max Heart Rate (bpm)", min_value=100, max_value=220, value=190)
     st.divider()
     st.header("📅 Time Frame")
     min_date, max_date = df['date_filter'].min().date(), df['date_filter'].max().date()
@@ -362,10 +369,8 @@ else:
 tab1, tab2, tab3 = st.tabs(["📈 Performance & Maps", "🔬 Deep Analysis", "📋 Ride Log"])
 
 with tab1:
-    # --- ADDED: Training Summary Table (Replaces Columns) ---
     st.subheader("Training Summary")
     
-    # Helper for summarizing stats
     def get_summary_stats(dframe):
         if dframe.empty:
             return 0, 0, 0, 0
@@ -375,18 +380,15 @@ with tab1:
         count = len(dframe)
         return dist, hours, elev, count
 
-    # Date ranges
     now = datetime.now()
     date_7d = now - timedelta(days=7)
     date_30d = now - timedelta(days=30)
     date_ytd = datetime(now.year, 1, 1)
 
-    # Filter data
     d7_stats = get_summary_stats(df[df['date_filter'] >= date_7d])
     d30_stats = get_summary_stats(df[df['date_filter'] >= date_30d])
     ytd_stats = get_summary_stats(df[df['date_filter'] >= date_ytd])
 
-    # Create Summary Dataframe
     summary_data = {
         "Metric": ["Distance (miles)", "Time (hours)", "Elevation (ft)", "Rides"],
         "Last 7 Days": [f"{d7_stats[0]:.1f}", f"{d7_stats[1]:.1f}", f"{d7_stats[2]:,.0f}", f"{d7_stats[3]}"],
@@ -398,7 +400,6 @@ with tab1:
     st.dataframe(summary_df, use_container_width=True)
     
     st.divider()
-    # ---------------------------------------
 
     st.subheader("Performance Management")
     if not pmc_display.empty:
@@ -441,7 +442,8 @@ with tab2:
             streams = fetch_streams(st.session_state["access_token"], selected_id)
         
         if streams:
-            data = calculate_advanced_metrics(streams, ftp_input)
+            # --- UPDATED: Pass max_hr to metric calc ---
+            data = calculate_advanced_metrics(streams, ftp_input, max_hr_input)
             
             st.markdown("#### ⚡ Power Stats")
             if data['np']:
@@ -492,18 +494,28 @@ with tab2:
             except Exception as e:
                 st.info(f"CSV download not available for this activity type.")
 
-            if data['np']:
-                col_chart1, col_chart2 = st.columns(2)
-                with col_chart1:
+            col_chart1, col_chart2 = st.columns(2)
+            with col_chart1:
+                if data['np']:
                     st.subheader("Power Curve")
                     dur = list(data['pdc'].keys())
                     pwr = list(data['pdc'].values())
                     st.plotly_chart(px.line(x=dur, y=pwr, title="Mean Max Power"), use_container_width=True)
+                else:
+                    st.info("No Power Curve available.")
+            
+            with col_chart2:
+                # --- UPDATED: Show Power OR Heart Rate Zones ---
+                if 'zone_dist' in data:
+                    st.subheader("Time in Power Zones")
+                    st.plotly_chart(px.bar(data['zone_dist'], orientation='h', title="Power Distribution", labels={'value': 'Seconds', 'index': 'Zone'}), use_container_width=True)
                 
-                with col_chart2:
-                    st.subheader("Time in Zones")
-                    if 'zone_dist' in data:
-                        st.plotly_chart(px.bar(data['zone_dist'], orientation='h', title="Power Distribution", labels={'value': 'Seconds', 'index': 'Zone'}), use_container_width=True)
+                if 'hr_zone_dist' in data:
+                    st.subheader("Time in HR Zones (%)")
+                    st.plotly_chart(px.bar(data['hr_zone_dist'], orientation='h', 
+                                         title="Heart Rate Distribution",
+                                         labels={'value': 'Percentage (%)', 'index': 'Zone'},
+                                         text_auto='.1f'), use_container_width=True)
 
             if GEMINI_AVAILABLE:
                 st.divider()
