@@ -98,12 +98,12 @@ def fetch_streams(access_token, activity_id):
 def calculate_training_load(df, ftp):
     if ftp <= 0: ftp = 200 
     
-    # Initialize basic columns if missing
-    for col in ['average_watts', 'average_heartrate', 'average_speed', 'moving_time']:
-        if col not in df.columns:
-            df[col] = 0.0
-            
-    # --- FIXED: Force columns to numeric to prevent math errors (Chart Fix) ---
+    # Ensure columns exist
+    if 'average_watts' not in df.columns: df['average_watts'] = 0
+    if 'average_heartrate' not in df.columns: df['average_heartrate'] = 0
+    if 'average_speed' not in df.columns: df['average_speed'] = 0
+    
+    # Force numeric types to prevent math errors
     df['average_watts'] = pd.to_numeric(df['average_watts'], errors='coerce').fillna(0)
     df['average_heartrate'] = pd.to_numeric(df['average_heartrate'], errors='coerce').fillna(0)
     df['moving_time'] = pd.to_numeric(df['moving_time'], errors='coerce').fillna(0)
@@ -113,12 +113,10 @@ def calculate_training_load(df, ftp):
     df['tss_score'] = (df['moving_time'] * df['average_watts'] * df['IF'] * 1.05) / (ftp * 3600) * 100
     
     # 2. Aggressive Fallback for Manual/No-Power rides
-    # If TSS is 0 or NaN (because watts=0), use the Time-based formula (~60 TSS/hr estimate)
-    # This ensures EVERY ride contributes to the chart.
     mask_zero_tss = (df['tss_score'].fillna(0) <= 0.1) & (df['moving_time'] > 0)
     df.loc[mask_zero_tss, 'tss_score'] = (df.loc[mask_zero_tss, 'moving_time'] / 3600) * 60
     
-    # 3. Final cleanup of TSS column
+    # 3. Final cleanup
     df['tss_score'] = df['tss_score'].fillna(0)
 
     df['efficiency_factor'] = df['average_watts'] / df['average_heartrate']
@@ -143,24 +141,27 @@ def calculate_training_load(df, ftp):
     return df
 
 def calculate_pmc(df):
-    df = df.sort_values('start_date_local', ascending=True)
+    # --- FIXED: Robust Date Processing ---
+    # 1. Convert to UTC datetime to handle mixed timezones safely
+    df['start_date_local'] = pd.to_datetime(df['start_date_local'], utc=True, errors='coerce')
     
-    # --- FIXED: Robust Date Handling ---
-    df['start_date_local'] = pd.to_datetime(df['start_date_local'])
-    # Safely remove timezone info
-    df['date_clean'] = df['start_date_local'].apply(lambda x: x.replace(tzinfo=None) if pd.notnull(x) else x)
-    df = df.set_index('date_clean')
+    # 2. Drop rows where date parsing failed
+    df = df.dropna(subset=['start_date_local'])
     
     if df.empty:
         return pd.DataFrame({'date': [], 'CTL': [], 'ATL': [], 'TSB': []})
 
-    # Resample daily
-    full_idx = pd.date_range(start=df.index.min(), end=df.index.max(), freq='D')
+    # 3. Normalize to just the Date (Midnight) for grouping
+    df['date_clean'] = df['start_date_local'].dt.normalize()
     
-    # Sum daily TSS (handles days with multiple rides)
-    daily_tss = df['tss_score'].resample('D').sum().reindex(full_idx, fill_value=0)
+    # 4. Group by Date and Sum TSS (Handles multiple rides per day)
+    daily_tss = df.groupby('date_clean')['tss_score'].sum()
     
-    # Calculate Metrics
+    # 5. Create a continuous date range (fill missing days with 0)
+    idx = pd.date_range(start=daily_tss.index.min(), end=daily_tss.index.max(), freq='D')
+    daily_tss = daily_tss.reindex(idx, fill_value=0)
+    
+    # 6. Calculate Metrics (EWMA)
     ctl = daily_tss.ewm(span=42, adjust=False).mean()
     atl = daily_tss.ewm(span=7, adjust=False).mean()
     tsb = ctl - atl
