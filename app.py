@@ -362,7 +362,7 @@ else:
 tab1, tab2, tab3 = st.tabs(["📈 Performance & Maps", "🔬 Deep Analysis", "📋 Ride Log"])
 
 with tab1:
-    # --- ADDED: Training Summary Section ---
+    # --- ADDED: Training Summary Table (Replaces Columns) ---
     st.subheader("Training Summary")
     
     # Helper for summarizing stats
@@ -382,34 +382,20 @@ with tab1:
     date_ytd = datetime(now.year, 1, 1)
 
     # Filter data
-    # Note: df['date_filter'] is datetime without timezone
     d7_stats = get_summary_stats(df[df['date_filter'] >= date_7d])
     d30_stats = get_summary_stats(df[df['date_filter'] >= date_30d])
     ytd_stats = get_summary_stats(df[df['date_filter'] >= date_ytd])
 
-    # Display Columns
-    col1, col2, col3 = st.columns(3)
+    # Create Summary Dataframe
+    summary_data = {
+        "Metric": ["Distance (miles)", "Time (hours)", "Elevation (ft)", "Rides"],
+        "Last 7 Days": [f"{d7_stats[0]:.1f}", f"{d7_stats[1]:.1f}", f"{d7_stats[2]:,.0f}", f"{d7_stats[3]}"],
+        "Last 30 Days": [f"{d30_stats[0]:.1f}", f"{d30_stats[1]:.1f}", f"{d30_stats[2]:,.0f}", f"{d30_stats[3]}"],
+        "Year to Date": [f"{ytd_stats[0]:.1f}", f"{ytd_stats[1]:.1f}", f"{ytd_stats[2]:,.0f}", f"{ytd_stats[3]}"]
+    }
     
-    with col1:
-        st.markdown("**Last 7 Days**")
-        st.metric("Miles", f"{d7_stats[0]:.1f}")
-        st.metric("Hours", f"{d7_stats[1]:.1f}")
-        st.metric("Elevation", f"{d7_stats[2]:,.0f} ft")
-        st.metric("Rides", f"{d7_stats[3]}")
-
-    with col2:
-        st.markdown("**Last 30 Days**")
-        st.metric("Miles", f"{d30_stats[0]:.1f}")
-        st.metric("Hours", f"{d30_stats[1]:.1f}")
-        st.metric("Elevation", f"{d30_stats[2]:,.0f} ft")
-        st.metric("Rides", f"{d30_stats[3]}")
-
-    with col3:
-        st.markdown("**Year to Date**")
-        st.metric("Miles", f"{ytd_stats[0]:.1f}")
-        st.metric("Hours", f"{ytd_stats[1]:.1f}")
-        st.metric("Elevation", f"{ytd_stats[2]:,.0f} ft")
-        st.metric("Rides", f"{ytd_stats[3]}")
+    summary_df = pd.DataFrame(summary_data).set_index("Metric")
+    st.dataframe(summary_df, use_container_width=True)
     
     st.divider()
     # ---------------------------------------
