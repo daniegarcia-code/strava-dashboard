@@ -99,7 +99,7 @@ def calculate_training_load(df, ftp):
     if ftp <= 0: ftp = 200 
     
     # Ensure columns exist
-    for col in ['average_watts', 'average_heartrate', 'average_speed', 'moving_time']:
+    for col in ['average_watts', 'average_heartrate', 'average_speed', 'moving_time', 'total_elevation_gain']:
         if col not in df.columns:
             df[col] = 0.0
             
@@ -107,6 +107,7 @@ def calculate_training_load(df, ftp):
     df['average_watts'] = pd.to_numeric(df['average_watts'], errors='coerce').fillna(0)
     df['average_heartrate'] = pd.to_numeric(df['average_heartrate'], errors='coerce').fillna(0)
     df['moving_time'] = pd.to_numeric(df['moving_time'], errors='coerce').fillna(0)
+    df['total_elevation_gain'] = pd.to_numeric(df['total_elevation_gain'], errors='coerce').fillna(0)
     
     # 1. Calculate Power-based TSS first
     df['IF'] = df['average_watts'] / ftp
@@ -141,6 +142,8 @@ def calculate_training_load(df, ftp):
     return df
 
 def calculate_pmc(df):
+    df = df.sort_values('start_date_local', ascending=True)
+    
     # --- FIXED: Robust Date Processing ---
     # 1. Convert to UTC datetime, coercing errors to NaT
     df['start_date_local'] = pd.to_datetime(df['start_date_local'], utc=True, errors='coerce')
@@ -152,7 +155,6 @@ def calculate_pmc(df):
         return pd.DataFrame({'date': [], 'CTL': [], 'ATL': [], 'TSB': []})
 
     # 3. Normalize to just the Date (Midnight) for grouping
-    # We use .dt.date first to strip time, then convert back to datetime for indexing
     df['date_clean'] = pd.to_datetime(df['start_date_local'].dt.date)
     
     # 4. Ensure TSS is numeric
@@ -360,6 +362,58 @@ else:
 tab1, tab2, tab3 = st.tabs(["📈 Performance & Maps", "🔬 Deep Analysis", "📋 Ride Log"])
 
 with tab1:
+    # --- ADDED: Training Summary Section ---
+    st.subheader("Training Summary")
+    
+    # Helper for summarizing stats
+    def get_summary_stats(dframe):
+        if dframe.empty:
+            return 0, 0, 0, 0
+        dist = dframe['distance_miles'].sum()
+        hours = dframe['moving_time'].sum() / 3600
+        elev = dframe['total_elevation_gain'].sum() * 3.28084
+        count = len(dframe)
+        return dist, hours, elev, count
+
+    # Date ranges
+    now = datetime.now()
+    date_7d = now - timedelta(days=7)
+    date_30d = now - timedelta(days=30)
+    date_ytd = datetime(now.year, 1, 1)
+
+    # Filter data
+    # Note: df['date_filter'] is datetime without timezone
+    d7_stats = get_summary_stats(df[df['date_filter'] >= date_7d])
+    d30_stats = get_summary_stats(df[df['date_filter'] >= date_30d])
+    ytd_stats = get_summary_stats(df[df['date_filter'] >= date_ytd])
+
+    # Display Columns
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("**Last 7 Days**")
+        st.metric("Miles", f"{d7_stats[0]:.1f}")
+        st.metric("Hours", f"{d7_stats[1]:.1f}")
+        st.metric("Elevation", f"{d7_stats[2]:,.0f} ft")
+        st.metric("Rides", f"{d7_stats[3]}")
+
+    with col2:
+        st.markdown("**Last 30 Days**")
+        st.metric("Miles", f"{d30_stats[0]:.1f}")
+        st.metric("Hours", f"{d30_stats[1]:.1f}")
+        st.metric("Elevation", f"{d30_stats[2]:,.0f} ft")
+        st.metric("Rides", f"{d30_stats[3]}")
+
+    with col3:
+        st.markdown("**Year to Date**")
+        st.metric("Miles", f"{ytd_stats[0]:.1f}")
+        st.metric("Hours", f"{ytd_stats[1]:.1f}")
+        st.metric("Elevation", f"{ytd_stats[2]:,.0f} ft")
+        st.metric("Rides", f"{ytd_stats[3]}")
+    
+    st.divider()
+    # ---------------------------------------
+
     st.subheader("Performance Management")
     if not pmc_display.empty:
         c1, c2, c3 = st.columns(3)
