@@ -154,7 +154,6 @@ def calculate_advanced_metrics(streams, ftp):
         metrics['vi'] = metrics['np'] / metrics['avg_pwr'] if metrics['avg_pwr'] > 0 else 1.0
         metrics['if'] = metrics['np'] / ftp
         
-        # --- FIXED: Extended Power Curve Durations (up to 5 hours) ---
         # List of durations to calculate (in seconds)
         std_durations = [1, 5, 15, 30, 60, 180, 300, 600, 1200, 1800, 2700, 3600, 5400, 7200, 10800, 14400, 18000]
         metrics['pdc'] = {}
@@ -171,7 +170,7 @@ def calculate_advanced_metrics(streams, ftp):
             if len(watts) > d:
                 metrics['pdc'][label] = watts.rolling(window=d).mean().max()
             else:
-                pass # Don't add points longer than the ride
+                pass 
             
         zones = [0, 0.55*ftp, 0.75*ftp, 0.90*ftp, 1.05*ftp, 1.20*ftp, 5000]
         labels = ["Z1 Active Recovery", "Z2 Endurance", "Z3 Tempo", "Z4 Threshold", "Z5 VO2Max", "Z6 Anaerobic"]
@@ -212,10 +211,11 @@ def calculate_advanced_metrics(streams, ftp):
 
     return metrics
 
-# --- ROBUST AI FUNCTION (AUTO-DETECT & ERROR SAFE) ---
-def ask_gemini(metrics, question):
+# --- ROBUST AI FUNCTION (AUTO-DETECT & ERROR SAFE & FULL DATA) ---
+def ask_gemini(metrics, streams, question): # Added streams arg
     if not GEMINI_AVAILABLE: return "Gemini API Key not found."
     
+    # 1. AUTO-DETECT AVAILABLE MODELS
     try:
         working_model_name = None
         all_models = [m.name for m in genai.list_models()]
@@ -240,21 +240,49 @@ def ask_gemini(metrics, question):
     except Exception as e:
         return f"Error detecting models: {e}"
 
-    # --- FIXED: Safe Handling of None values for AI Coach ---
-    # Using a helper function to return 0 if the value is None
+    # 2. PREPARE RAW DATA (CSV FORMAT) FOR AI
+    csv_context = ""
+    try:
+        # Build dictionary from streams
+        raw_data = {}
+        if streams:
+            for key, val in streams.items():
+                if 'data' in val:
+                    raw_data[key] = val['data']
+            
+            # Ensure equal lengths for DataFrame creation
+            if raw_data:
+                min_len = min(len(v) for v in raw_data.values())
+                # Truncate to matching length
+                raw_data_synced = {k: v[:min_len] for k, v in raw_data.items()}
+                
+                # Create DataFrame and stringify
+                df_context = pd.DataFrame(raw_data_synced)
+                # We limit rows if huge, but 1.5 Flash handles ~1M tokens, 
+                # so full ride data (e.g. 10k-20k rows) is usually fine.
+                csv_context = df_context.to_csv(index=False)
+    except Exception as e:
+        csv_context = f"[Error processing raw data: {e}]"
+
+    # 3. GENERATE CONTENT
     safe_get = lambda k: metrics.get(k) or 0
-    
-    # NP needs special handling to print N/A if it's truly missing (not just 0)
-    np_val = f"{safe_get('np'):.0f}" if metrics.get('np') is not None else "N/A"
+    np_val = f"{safe_get('np'):.0f}" if metrics.get('np') else "N/A"
     
     prompt = f"""
-    Analyze this ride data:
+    You are an expert cycling coach. Analyze this ride data.
+    
+    ### Ride Summary Metrics:
     - NP: {np_val} W
     - IF: {safe_get('if'):.2f}
     - VI: {safe_get('vi'):.2f}
     - Decoupling: {safe_get('decoupling'):.1f}%
     - Avg HR: {safe_get('avg_hr'):.0f} bpm
-    User Question: "{question}"
+    
+    ### Full Second-by-Second Data (CSV):
+    {csv_context}
+    
+    ### User Question:
+    "{question}"
     """
     try:
         response = model.generate_content(prompt)
@@ -393,15 +421,13 @@ with tab2:
             
             st.divider()
             
-            # --- FIXED: CSV Download Button ---
+            # --- CSV Download Button ---
             try:
-                # Prepare CSV dataframe from streams
                 export_data = {}
                 for k, v in streams.items():
                     if 'data' in v:
                         export_data[k] = v['data']
                 
-                # Check for length consistency (basic)
                 lengths = [len(v) for v in export_data.values()]
                 if lengths and all(x == lengths[0] for x in lengths):
                     csv_df = pd.DataFrame(export_data)
@@ -436,7 +462,8 @@ with tab2:
                 q = st.text_input("Ask Gemini about this ride:", placeholder="How was my pacing?")
                 if st.button("Ask Coach"):
                     with st.spinner("Thinking..."):
-                        st.markdown(ask_gemini(data, q))
+                        # Updated call passing streams
+                        st.markdown(ask_gemini(data, streams, q))
         else: st.error("Could not load ride data.")
     else: st.warning("No rides in selected date range.")
 
