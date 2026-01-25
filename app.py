@@ -241,9 +241,11 @@ def ask_gemini(metrics, question):
         return f"Error detecting models: {e}"
 
     # --- FIXED: Safe Handling of None values for AI Coach ---
+    # Using a helper function to return 0 if the value is None
     safe_get = lambda k: metrics.get(k) or 0
     
-    np_val = f"{safe_get('np'):.0f}" if metrics.get('np') else "N/A"
+    # NP needs special handling to print N/A if it's truly missing (not just 0)
+    np_val = f"{safe_get('np'):.0f}" if metrics.get('np') is not None else "N/A"
     
     prompt = f"""
     Analyze this ride data:
