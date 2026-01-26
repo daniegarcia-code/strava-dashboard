@@ -141,6 +141,61 @@ def calculate_training_load(df, ftp):
     
     return df
 
+# --- NEW: Deduplicate Logic ---
+def deduplicate_rides(df):
+    if df.empty: return df
+    
+    # Sort to compare adjacent rides
+    df = df.sort_values('start_date_local')
+    drop_indices = []
+    
+    # Iterate through indices
+    # We use indices to safely access rows even after reordering
+    indices = df.index.tolist()
+    
+    for i in range(len(indices) - 1):
+        idx_curr = indices[i]
+        idx_next = indices[i+1]
+        
+        # Access rows
+        row_curr = df.loc[idx_curr]
+        row_next = df.loc[idx_next]
+        
+        # Check time overlap (within 15 mins)
+        time_diff = abs((row_next['start_date_local'] - row_curr['start_date_local']).total_seconds())
+        
+        if time_diff < 900: # 15 minutes tolerance
+            dev1 = str(row_curr['device_name']).lower()
+            dev2 = str(row_next['device_name']).lower()
+            
+            wahoo_idx = None
+            apple_idx = None
+            
+            # Identify which is which
+            if 'wahoo' in dev1 and 'apple' in dev2:
+                wahoo_idx = idx_curr
+                apple_idx = idx_next
+            elif 'apple' in dev1 and 'wahoo' in dev2:
+                apple_idx = idx_curr
+                wahoo_idx = idx_next
+            
+            if wahoo_idx is not None and apple_idx is not None:
+                # Get Apple HR
+                apple_hr = df.loc[apple_idx, 'average_heartrate']
+                
+                # Copy HR to Wahoo ride if valid
+                if pd.notnull(apple_hr) and apple_hr > 0:
+                    df.loc[wahoo_idx, 'average_heartrate'] = apple_hr
+                    # Recalculate Efficiency Factor for Wahoo ride
+                    watts = df.loc[wahoo_idx, 'average_watts']
+                    if watts > 0:
+                        df.loc[wahoo_idx, 'efficiency_factor'] = watts / apple_hr
+                
+                # Mark Apple ride for removal
+                drop_indices.append(apple_idx)
+    
+    return df.drop(drop_indices)
+
 def calculate_pmc(df):
     df = df.sort_values('start_date_local', ascending=True)
     
@@ -167,7 +222,6 @@ def calculate_pmc(df):
     pmc_df = pd.DataFrame({'CTL': ctl, 'ATL': atl, 'TSB': tsb})
     return pmc_df.reset_index().rename(columns={'index': 'date'})
 
-# --- UPDATED: Accepted Max HR for Zone calc ---
 def calculate_advanced_metrics(streams, ftp, max_hr):
     metrics = {}
     
@@ -203,18 +257,13 @@ def calculate_advanced_metrics(streams, ftp, max_hr):
         metrics['avg_hr'] = hr.mean()
         metrics['max_hr'] = hr.max()
         
-        # --- NEW: Heart Rate Zone Calculation (Percentages) ---
         if max_hr > 0:
-            # 5 Zones: Z1 <60%, Z2 60-70%, Z3 70-80%, Z4 80-90%, Z5 >90%
             hr_zones = [0, 0.60*max_hr, 0.70*max_hr, 0.80*max_hr, 0.90*max_hr, 300]
             hr_labels = ["Z1 Recovery", "Z2 Endurance", "Z3 Tempo", "Z4 Threshold", "Z5 Anaerobic"]
             hr_cut = pd.cut(hr, bins=hr_zones, labels=hr_labels)
-            
-            # Calculate percentages
             total_seconds = len(hr)
             if total_seconds > 0:
                 metrics['hr_zone_dist'] = (hr_cut.value_counts(sort=False) / total_seconds) * 100
-        # -------------------------------------------------------
         
         if 'watts' in streams:
             half = len(watts) // 2
@@ -343,7 +392,6 @@ df['distance_miles'] = df['distance'] / 1609.34
 with st.sidebar:
     st.header("⚙️ Settings")
     ftp_input = st.number_input("Your FTP (Watts)", min_value=100, max_value=500, value=250)
-    # --- ADDED: Max HR Input ---
     max_hr_input = st.number_input("Max Heart Rate (bpm)", min_value=100, max_value=220, value=190)
     st.divider()
     st.header("📅 Time Frame")
@@ -354,7 +402,13 @@ with st.sidebar:
         st.session_state.clear()
         st.rerun()
 
+# 1. Calc Load
 df = calculate_training_load(df, ftp_input)
+
+# 2. DEDUPLICATE (Consolidate Wahoo + Apple Watch)
+df = deduplicate_rides(df)
+
+# 3. Calc PMC
 pmc_data_full = calculate_pmc(df)
 
 if len(date_range) == 2:
@@ -442,7 +496,6 @@ with tab2:
             streams = fetch_streams(st.session_state["access_token"], selected_id)
         
         if streams:
-            # --- UPDATED: Pass max_hr to metric calc ---
             data = calculate_advanced_metrics(streams, ftp_input, max_hr_input)
             
             st.markdown("#### ⚡ Power Stats")
@@ -505,7 +558,6 @@ with tab2:
                     st.info("No Power Curve available.")
             
             with col_chart2:
-                # --- UPDATED: Show Power OR Heart Rate Zones ---
                 if 'zone_dist' in data:
                     st.subheader("Time in Power Zones")
                     st.plotly_chart(px.bar(data['zone_dist'], orientation='h', title="Power Distribution", labels={'value': 'Seconds', 'index': 'Zone'}), use_container_width=True)
