@@ -141,37 +141,36 @@ def calculate_training_load(df, ftp):
     
     return df
 
-# --- NEW: Deduplicate Logic ---
+# --- DEDUPLICATION LOGIC ---
 def deduplicate_rides(df):
     if df.empty: return df
     
-    # Sort to compare adjacent rides
+    # Initialize link column
+    df['hr_source_id'] = None
+    
     df = df.sort_values('start_date_local')
     drop_indices = []
     
-    # Iterate through indices
-    # We use indices to safely access rows even after reordering
     indices = df.index.tolist()
     
     for i in range(len(indices) - 1):
         idx_curr = indices[i]
         idx_next = indices[i+1]
         
-        # Access rows
         row_curr = df.loc[idx_curr]
         row_next = df.loc[idx_next]
         
-        # Check time overlap (within 15 mins)
+        # Check overlapping time (15 mins)
         time_diff = abs((row_next['start_date_local'] - row_curr['start_date_local']).total_seconds())
         
-        if time_diff < 900: # 15 minutes tolerance
+        if time_diff < 900: 
             dev1 = str(row_curr['device_name']).lower()
             dev2 = str(row_next['device_name']).lower()
             
             wahoo_idx = None
             apple_idx = None
             
-            # Identify which is which
+            # Identify primary vs secondary
             if 'wahoo' in dev1 and 'apple' in dev2:
                 wahoo_idx = idx_curr
                 apple_idx = idx_next
@@ -180,18 +179,19 @@ def deduplicate_rides(df):
                 wahoo_idx = idx_next
             
             if wahoo_idx is not None and apple_idx is not None:
-                # Get Apple HR
+                # 1. Update Summary Stats
                 apple_hr = df.loc[apple_idx, 'average_heartrate']
-                
-                # Copy HR to Wahoo ride if valid
                 if pd.notnull(apple_hr) and apple_hr > 0:
                     df.loc[wahoo_idx, 'average_heartrate'] = apple_hr
-                    # Recalculate Efficiency Factor for Wahoo ride
+                    # Recalculate EF
                     watts = df.loc[wahoo_idx, 'average_watts']
                     if watts > 0:
                         df.loc[wahoo_idx, 'efficiency_factor'] = watts / apple_hr
                 
-                # Mark Apple ride for removal
+                # 2. Store Source ID for Stream Fetching
+                df.loc[wahoo_idx, 'hr_source_id'] = df.loc[apple_idx, 'id']
+                
+                # 3. Mark for Deletion
                 drop_indices.append(apple_idx)
     
     return df.drop(drop_indices)
@@ -328,10 +328,12 @@ def ask_gemini(metrics, streams, question):
                     raw_data[key] = val['data']
             
             if raw_data:
+                # --- FIXED: Robust DataFrame creation (Trim to min length) ---
                 min_len = min(len(v) for v in raw_data.values())
                 raw_data_synced = {k: v[:min_len] for k, v in raw_data.items()}
                 csv_df = pd.DataFrame(raw_data_synced)
                 csv_context = csv_df.to_csv(index=False)
+                # -------------------------------------------------------------
     except Exception as e:
         csv_context = f"[Error processing raw data: {e}]"
 
@@ -494,6 +496,19 @@ with tab2:
 
         with st.spinner("Fetching details..."):
             streams = fetch_streams(st.session_state["access_token"], selected_id)
+            
+            # --- MERGE STREAMS LOGIC ---
+            selected_row = df_display[df_display['id'] == selected_id].iloc[0]
+            if selected_row.get('hr_source_id'):
+                try:
+                    hr_id = int(selected_row['hr_source_id'])
+                    hr_streams = fetch_streams(st.session_state["access_token"], hr_id)
+                    if hr_streams and 'heartrate' in hr_streams:
+                        streams['heartrate'] = hr_streams['heartrate']
+                        st.toast(f"Merged Heart Rate from Apple Watch ride (ID: {hr_id})")
+                except Exception as e:
+                    st.error(f"Failed to merge HR streams: {e}")
+            # ---------------------------
         
         if streams:
             data = calculate_advanced_metrics(streams, ftp_input, max_hr_input)
@@ -533,9 +548,12 @@ with tab2:
                     if 'data' in v:
                         export_data[k] = v['data']
                 
+                # --- FIXED: Robust CSV generation (Trim to min length) ---
                 lengths = [len(v) for v in export_data.values()]
-                if lengths and all(x == lengths[0] for x in lengths):
-                    csv_df = pd.DataFrame(export_data)
+                if lengths:
+                    min_len = min(lengths)
+                    export_data_synced = {k: v[:min_len] for k, v in export_data.items()}
+                    csv_df = pd.DataFrame(export_data_synced)
                     csv_file = csv_df.to_csv(index=False).encode('utf-8')
                     
                     st.download_button(
@@ -544,8 +562,9 @@ with tab2:
                         file_name=f"ride_{selected_id}.csv",
                         mime="text/csv",
                     )
+                # ---------------------------------------------------------
             except Exception as e:
-                st.info(f"CSV download not available for this activity type.")
+                st.info(f"CSV download not available: {e}")
 
             col_chart1, col_chart2 = st.columns(2)
             with col_chart1:
