@@ -493,21 +493,6 @@ with tab1:
         fig_pmc.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0))
         st.plotly_chart(fig_pmc, use_container_width=True)
 
-    st.divider()
-    st.subheader(f"Heatmap ({len(df_display)} rides)")
-    if 'map.summary_polyline' in df_display.columns:
-        map_df = df_display[df_display['map.summary_polyline'].notna()].copy()
-        if not map_df.empty:
-            map_df['path'] = map_df['map.summary_polyline'].apply(decode_polyline)
-            map_df = map_df[map_df['path'].map(len) > 0]
-            if not map_df.empty:
-                layer = pdk.Layer("PathLayer", data=map_df, get_path="path", get_color=[255, 75, 75], width_min_pixels=2, opacity=0.8)
-                start_pt = map_df.iloc[0]['path'][0]
-                view_state = pdk.ViewState(latitude=start_pt[1], longitude=start_pt[0], zoom=10)
-                st.pydeck_chart(pdk.Deck(map_style="mapbox://styles/mapbox/light-v9", initial_view_state=view_state, layers=[layer]))
-            else: st.info("No valid routes found.")
-        else: st.info("No map data available.")
-
 with tab2:
     st.write("### Single Ride Deep Dive")
     if not df_display.empty:
@@ -583,6 +568,44 @@ with tab2:
                 }
                 st.dataframe(pd.DataFrame(table3), hide_index=True, use_container_width=True)
 
+            # --- MAP SECTION (Moved to Tab 2) ---
+            st.divider()
+            st.subheader("Route Map")
+            if selected_row.get('map.summary_polyline'):
+                decoded_path = decode_polyline(selected_row['map.summary_polyline'])
+                if decoded_path:
+                    # Calculate center for view state
+                    lats = [p[1] for p in decoded_path]
+                    lngs = [p[0] for p in decoded_path]
+                    mid_lat = sum(lats) / len(lats)
+                    mid_lng = sum(lngs) / len(lngs)
+
+                    view_state = pdk.ViewState(
+                        latitude=mid_lat,
+                        longitude=mid_lng,
+                        zoom=11,
+                        pitch=0
+                    )
+                    
+                    layer = pdk.Layer(
+                        "PathLayer",
+                        data=[{"path": decoded_path}],
+                        get_path="path",
+                        get_color=[255, 0, 0], # Red line
+                        width_min_pixels=3,
+                        opacity=0.9
+                    )
+                    
+                    st.pydeck_chart(pdk.Deck(
+                        map_style="mapbox://styles/mapbox/light-v9",
+                        initial_view_state=view_state,
+                        layers=[layer]
+                    ))
+                else:
+                    st.info("No GPS data for this ride.")
+            else:
+                st.info("No map available.")
+
             # --- NEW: Robust Interactive Chart ---
             st.divider()
             st.subheader("📊 Power vs. Heart Rate Analysis")
@@ -600,6 +623,10 @@ with tab2:
                     if chart_data and len(chart_data) > 1:
                         min_len = min(len(v) for v in chart_data.values())
                         chart_df = pd.DataFrame({k: v[:min_len] for k, v in chart_data.items()})
+                        
+                        # --- UPDATED: Convert Seconds to Minutes ---
+                        if 'Time' in chart_df.columns:
+                            chart_df['Time'] = chart_df['Time'] / 60
                         
                         if not chart_df.empty:
                             fig = go.Figure()
@@ -629,7 +656,7 @@ with tab2:
                             layout_opts = dict(
                                 height=400,
                                 hovermode="x unified",
-                                xaxis=dict(title="Duration (seconds)"),
+                                xaxis=dict(title="Duration (minutes)"), # CHANGED LABEL
                                 margin=dict(l=0, r=0, t=30, b=0),
                                 legend=dict(orientation="h", y=1.1)
                             )
