@@ -24,7 +24,7 @@ except (KeyError, FileNotFoundError):
     st.error("Secrets not found! Please check your .streamlit/secrets.toml file.")
     st.stop()
 
-# REDIRECT_URI = "https://strava-dashboard-f2xuhecncj4hh7tpmpgupx.streamlit.app"
+# REDIRECT_URI = "http://localhost:8501" # Uncomment for local testing
 REDIRECT_URI = "https://strava-dashboard-f2xuhecncj4hh7tpmpgupx.streamlit.app" 
 
 def get_auth_url():
@@ -206,39 +206,50 @@ def deduplicate_rides(df):
     return df.drop(drop_indices)
 
 def calculate_pmc(df):
+    # Ensure date processing is robust and NAIVE (no timezone)
     df = df.sort_values('start_date_local', ascending=True)
     
-    # Robust Date Processing
-    df['start_date_local'] = pd.to_datetime(df['start_date_local'], utc=True, errors='coerce')
+    # 1. Force conversion to datetime, handling errors
+    df['start_date_local'] = pd.to_datetime(df['start_date_local'], errors='coerce')
+    
+    # 2. Drop invalid dates
     df = df.dropna(subset=['start_date_local'])
     
     if df.empty:
         return pd.DataFrame({'date': [], 'CTL': [], 'ATL': [], 'TSB': []})
 
-    # Normalize to naive date objects for grouping
+    # 3. Create timezone-naive date column for grouping
     df['date_clean'] = df['start_date_local'].dt.date
     df['tss_score'] = pd.to_numeric(df['tss_score'], errors='coerce').fillna(0)
 
+    # 4. Group
     daily_tss = df.groupby('date_clean')['tss_score'].sum()
     
     if not daily_tss.empty:
         idx = pd.date_range(start=daily_tss.index.min(), end=daily_tss.index.max(), freq='D')
         daily_tss = daily_tss.reindex(idx, fill_value=0)
     
+    # 5. Calculate Metrics
     ctl = daily_tss.ewm(span=42, adjust=False).mean()
     atl = daily_tss.ewm(span=7, adjust=False).mean()
     tsb = ctl - atl
     
     pmc_df = pd.DataFrame({'CTL': ctl, 'ATL': atl, 'TSB': tsb})
-    # Reset index to make 'date' a column
     pmc_df = pmc_df.reset_index().rename(columns={'index': 'date'})
-    # FIX: Ensure PMC date column is timezone-naive to match st.date_input
-    pmc_df['date'] = pmc_df['date'].dt.tz_localize(None)
+    
+    # 6. Final safety: Ensure output date column is standard datetime64[ns]
+    pmc_df['date'] = pd.to_datetime(pmc_df['date'])
     
     return pmc_df
 
 def calculate_advanced_metrics(streams, ftp, max_hr):
-    metrics = {}
+    # Initialize ALL keys to None to prevent KeyErrors if streams are missing
+    metrics = {
+        'np': None, 'if': None, 'vi': None, 'avg_pwr': None,
+        'avg_hr': None, 'max_hr': None, 'decoupling': None,
+        'avg_speed': None, 'max_speed': None, 'avg_cadence': None,
+        'zone_dist': None, 'hr_zone_dist': None, 'pdc': {}
+    }
     
     if 'watts' in streams:
         watts = pd.Series(streams['watts']['data'])
@@ -249,7 +260,6 @@ def calculate_advanced_metrics(streams, ftp, max_hr):
         
         # Extended Power Curve
         std_durations = [1, 5, 15, 30, 60, 180, 300, 600, 1200, 1800, 2700, 3600, 5400, 7200, 10800, 14400, 18000]
-        metrics['pdc'] = {}
         for d in std_durations:
             if d >= 3600: label = f"{d/3600:.1f}h"
             elif d >= 60: label = f"{int(d/60)}m"
@@ -257,15 +267,11 @@ def calculate_advanced_metrics(streams, ftp, max_hr):
             
             if len(watts) > d:
                 metrics['pdc'][label] = watts.rolling(window=d).mean().max()
-            else:
-                pass 
             
         zones = [0, 0.55*ftp, 0.75*ftp, 0.90*ftp, 1.05*ftp, 1.20*ftp, 5000]
         labels = ["Z1 Active Recovery", "Z2 Endurance", "Z3 Tempo", "Z4 Threshold", "Z5 VO2Max", "Z6 Anaerobic"]
         watts_cut = pd.cut(watts, bins=zones, labels=labels)
         metrics['zone_dist'] = watts_cut.value_counts(sort=False)
-    else:
-        metrics['np'] = None
 
     if 'heartrate' in streams:
         hr = pd.Series(streams['heartrate']['data'])
@@ -281,6 +287,7 @@ def calculate_advanced_metrics(streams, ftp, max_hr):
                 metrics['hr_zone_dist'] = (hr_cut.value_counts(sort=False) / total_seconds) * 100
         
         if 'watts' in streams:
+            watts = pd.Series(streams['watts']['data']) # Re-get watts safely
             half = len(watts) // 2
             if half > 0:
                 p1, h1 = watts.iloc[:half].mean(), hr.iloc[:half].mean()
@@ -289,21 +296,15 @@ def calculate_advanced_metrics(streams, ftp, max_hr):
                     r1, r2 = p1/h1, p2/h2
                     metrics['decoupling'] = (r1 - r2) / r1 * 100
                 else: metrics['decoupling'] = 0
-            else: metrics['decoupling'] = 0
-        else: metrics['decoupling'] = None
-    else:
-        metrics['avg_hr'] = None
 
     if 'velocity_smooth' in streams:
         speed = pd.Series(streams['velocity_smooth']['data']) * 2.23694 
         metrics['avg_speed'] = speed.mean()
         metrics['max_speed'] = speed.max()
-    else: metrics['avg_speed'] = None
 
     if 'cadence' in streams:
         cad = pd.Series(streams['cadence']['data'])
         metrics['avg_cadence'] = cad[cad > 0].mean()
-    else: metrics['avg_cadence'] = None
 
     return metrics
 
@@ -400,9 +401,9 @@ if not raw_data:
     st.stop()
 
 df = pd.json_normalize(raw_data)
-# FIX: Clean timezone handling
-df['start_date_local'] = pd.to_datetime(df['start_date_local'])
-df['date_filter'] = df['start_date_local'].dt.tz_localize(None) 
+# FIX: Convert to datetime, then strip timezone to match st.date_input
+df['start_date_local'] = pd.to_datetime(df['start_date_local']).dt.tz_localize(None)
+df['date_filter'] = df['start_date_local']
 df['distance_miles'] = df['distance'] / 1609.34
 
 # SIDEBAR
@@ -429,11 +430,12 @@ df = deduplicate_rides(df)
 pmc_data_full = calculate_pmc(df)
 
 if len(date_range) == 2:
+    # Ensure start_ts/end_ts are timezone naive
     start_ts = pd.Timestamp(date_range[0])
     end_ts = pd.Timestamp(date_range[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-    df_display = df[(df['date_filter'] >= start_ts) & (df['date_filter'] <= end_ts)].copy()
     
-    # FIX: Ensure dates are naive before comparison
+    # Filter using naive datetimes (safe)
+    df_display = df[(df['date_filter'] >= start_ts) & (df['date_filter'] <= end_ts)].copy()
     pmc_mask = (pmc_data_full['date'] >= start_ts) & (pmc_data_full['date'] <= end_ts)
     pmc_display = pmc_data_full[pmc_mask]
 else:
@@ -592,57 +594,57 @@ with tab2:
                 if 'heartrate' in streams:
                     chart_data['Heart Rate'] = streams['heartrate']['data']
                 
-                # Align lengths
-                min_len = min(len(v) for v in chart_data.values())
-                chart_df = pd.DataFrame({k: v[:min_len] for k, v in chart_data.items()})
-                
-                # Create Dual-Axis Plot
-                fig = go.Figure()
+                # Check if data exists before processing
+                if chart_data and len(chart_data) > 1:
+                    min_len = min(len(v) for v in chart_data.values())
+                    chart_df = pd.DataFrame({k: v[:min_len] for k, v in chart_data.items()})
+                    
+                    # Create Dual-Axis Plot
+                    fig = go.Figure()
 
-                # 1. Power Trace (Primary Y)
-                if 'Power' in chart_df.columns:
-                    fig.add_trace(go.Scatter(
-                        x=chart_df['Time'], 
-                        y=chart_df['Power'],
-                        name="Power (W)",
-                        line=dict(color='#FFA500', width=1),
-                        opacity=0.7
-                    ))
+                    # 1. Power Trace (Primary Y)
+                    if 'Power' in chart_df.columns:
+                        fig.add_trace(go.Scatter(
+                            x=chart_df['Time'], 
+                            y=chart_df['Power'],
+                            name="Power (W)",
+                            line=dict(color='#FFA500', width=1),
+                            opacity=0.7
+                        ))
 
-                # 2. Heart Rate Trace (Secondary Y)
-                if 'Heart Rate' in chart_df.columns:
-                    fig.add_trace(go.Scatter(
-                        x=chart_df['Time'], 
-                        y=chart_df['Heart Rate'],
-                        name="Heart Rate (bpm)",
-                        line=dict(color='#FF4B4B', width=2),
-                        yaxis="y2"
-                    ))
+                    # 2. Heart Rate Trace (Secondary Y)
+                    if 'Heart Rate' in chart_df.columns:
+                        fig.add_trace(go.Scatter(
+                            x=chart_df['Time'], 
+                            y=chart_df['Heart Rate'],
+                            name="Heart Rate (bpm)",
+                            line=dict(color='#FF4B4B', width=2),
+                            yaxis="y2"
+                        ))
 
-                # Layout
-                fig.update_layout(
-                    height=400,
-                    hovermode="x unified",
-                    yaxis=dict(
-                        title="Power (Watts)",
-                        titlefont=dict(color="#FFA500"),
-                        tickfont=dict(color="#FFA500")
-                    ),
-                    yaxis2=dict(
-                        title="Heart Rate (bpm)",
-                        titlefont=dict(color="#FF4B4B"),
-                        tickfont=dict(color="#FF4B4B"),
-                        overlaying="y",
-                        side="right"
-                    ),
-                    xaxis=dict(title="Duration (seconds)"),
-                    margin=dict(l=0, r=0, t=30, b=0),
-                    legend=dict(orientation="h", y=1.1)
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("No stream data available for chart.")
+                    # Layout
+                    fig.update_layout(
+                        height=400,
+                        hovermode="x unified",
+                        yaxis=dict(
+                            title="Power (Watts)",
+                            titlefont=dict(color="#FFA500"),
+                            tickfont=dict(color="#FFA500")
+                        ),
+                        yaxis2=dict(
+                            title="Heart Rate (bpm)",
+                            titlefont=dict(color="#FF4B4B"),
+                            tickfont=dict(color="#FF4B4B"),
+                            overlaying="y",
+                            side="right"
+                        ),
+                        xaxis=dict(title="Duration (seconds)"),
+                        margin=dict(l=0, r=0, t=30, b=0),
+                        legend=dict(orientation="h", y=1.1)
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("Insufficient data for Power/HR chart.")
             # -------------------------------------
 
             st.divider()
