@@ -597,7 +597,7 @@ with tab2:
                     )
                     
                     st.pydeck_chart(pdk.Deck(
-                        map_style="mapbox://styles/mapbox/light-v9",
+                        map_style="mapbox://styles/mapbox/satellite-streets-v12",
                         initial_view_state=view_state,
                         layers=[layer]
                     ))
@@ -656,7 +656,7 @@ with tab2:
                             layout_opts = dict(
                                 height=400,
                                 hovermode="x unified",
-                                xaxis=dict(title="Duration (minutes)"), # CHANGED LABEL
+                                xaxis=dict(title="Duration (minutes)"), 
                                 margin=dict(l=0, r=0, t=30, b=0),
                                 legend=dict(orientation="h", y=1.1)
                             )
