@@ -636,8 +636,7 @@ with tab2:
                             
                             if has_power:
                                 layout_opts['yaxis'] = dict(
-                                    title="Power (Watts)", 
-                                    titlefont=dict(color="#FFA500"), 
+                                    title=dict(text="Power (Watts)", font=dict(color="#FFA500")),
                                     tickfont=dict(color="#FFA500")
                                 )
                                 
@@ -645,8 +644,7 @@ with tab2:
                                 if has_power:
                                     # Dual Axis Mode
                                     layout_opts['yaxis2'] = dict(
-                                        title="Heart Rate (bpm)",
-                                        titlefont=dict(color="#FF4B4B"),
+                                        title=dict(text="Heart Rate (bpm)", font=dict(color="#FF4B4B")),
                                         tickfont=dict(color="#FF4B4B"),
                                         overlaying="y",
                                         side="right"
@@ -654,8 +652,7 @@ with tab2:
                                 else:
                                     # Single Axis Mode (HR only)
                                     layout_opts['yaxis'] = dict(
-                                        title="Heart Rate (bpm)", 
-                                        titlefont=dict(color="#FF4B4B"), 
+                                        title=dict(text="Heart Rate (bpm)", font=dict(color="#FF4B4B")),
                                         tickfont=dict(color="#FF4B4B")
                                     )
 
