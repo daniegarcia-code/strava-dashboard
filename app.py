@@ -587,19 +587,29 @@ with tab2:
                         pitch=0
                     )
                     
-                    layer = pdk.Layer(
+                    # 1. Satellite Background Layer (Esri World Imagery - Free/Public)
+                    satellite_layer = pdk.Layer(
+                        "TileLayer",
+                        data="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                        min_zoom=0,
+                        max_zoom=19,
+                        tileSize=256,
+                    )
+
+                    # 2. The Route Line
+                    route_layer = pdk.Layer(
                         "PathLayer",
                         data=[{"path": decoded_path}],
                         get_path="path",
-                        get_color=[255, 0, 0], # Red line
+                        get_color=[255, 75, 75], # Bright Red
                         width_min_pixels=3,
-                        opacity=0.9
+                        opacity=1.0
                     )
                     
                     st.pydeck_chart(pdk.Deck(
-                        map_style="mapbox://styles/mapbox/satellite-streets-v12",
+                        map_style=None, # Disable Mapbox style to rely on TileLayer
                         initial_view_state=view_state,
-                        layers=[layer]
+                        layers=[satellite_layer, route_layer] 
                     ))
                 else:
                     st.info("No GPS data for this ride.")
