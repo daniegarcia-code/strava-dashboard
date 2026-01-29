@@ -392,7 +392,9 @@ if "access_token" not in st.session_state:
         st.link_button("Connect with Strava", get_auth_url())
         st.stop()
 
-st.title(f"Endurance Lab: {st.session_state['athlete_name']}")
+# FIX: Robustly get athlete name to prevent KeyError on reboot
+athlete_name = st.session_state.get("athlete_name", "Athlete")
+st.title(f"Endurance Lab: {athlete_name}")
 
 with st.spinner("Analyzing training history..."):
     raw_data = fetch_activities(st.session_state["access_token"])
