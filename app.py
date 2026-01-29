@@ -130,7 +130,6 @@ def calculate_training_load(df, ftp):
     df['tss_score'] = df['tss_score'].fillna(0)
 
     # 4. Calculate Efficiency Factor (Avg Power / Avg HR)
-    # Prevent division by zero
     df['efficiency_factor'] = df.apply(
         lambda row: row['average_watts'] / row['average_heartrate'] 
         if row['average_heartrate'] > 0 and row['average_watts'] > 0 else None, axis=1
@@ -498,7 +497,7 @@ with tab1:
         fig_pmc.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0))
         st.plotly_chart(fig_pmc, use_container_width=True)
 
-    # --- NEW: Efficiency Factor Chart ---
+    # --- NEW: Efficiency Factor Chart (Robust Manual Trendline) ---
     st.divider()
     st.subheader("Efficiency Factor (EF) Over Time")
     
@@ -507,18 +506,32 @@ with tab1:
     ef_df = ef_df[ef_df['efficiency_factor'] > 0] # Remove zeros
     
     if not ef_df.empty:
+        # Calculate simple 5-ride moving average for trend
+        ef_df = ef_df.sort_values('start_date_local')
+        ef_df['EF_Trend'] = ef_df['efficiency_factor'].rolling(window=5, min_periods=1).mean()
+
         fig_ef = px.scatter(
             ef_df, 
             x="start_date_local", 
             y="efficiency_factor", 
-            trendline="lowess", 
             hover_data=["name", "average_watts", "average_heartrate"],
             labels={"efficiency_factor": "EF (Watts/HR)", "start_date_local": "Date"}
         )
+        # Add the points
         fig_ef.update_traces(marker=dict(size=8, color='green', opacity=0.6))
+        
+        # Add the manual trendline
+        fig_ef.add_trace(go.Scatter(
+            x=ef_df['start_date_local'], 
+            y=ef_df['EF_Trend'], 
+            mode='lines', 
+            name='Trend (5-Ride Avg)',
+            line=dict(color='darkgreen', width=3)
+        ))
+
         fig_ef.update_layout(height=400)
         st.plotly_chart(fig_ef, use_container_width=True)
-        st.caption("Note: Efficiency Factor (EF) = Avg Power / Avg Heart Rate. Higher is better (more power for same HR).")
+        st.caption("Note: Efficiency Factor (EF) = Avg Power / Avg Heart Rate. Higher is better.")
     else:
         st.info("Not enough data to calculate Efficiency Factor (requires Power and Heart Rate).")
 
