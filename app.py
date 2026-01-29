@@ -403,9 +403,9 @@ if not raw_data:
     st.stop()
 
 df = pd.json_normalize(raw_data)
-# FIX: Convert to datetime, then strip timezone to match st.date_input
+# FIX: GLOBAL TIMEZONE STRIP - Convert to datetime, then strip timezone IMMEDIATELY
 df['start_date_local'] = pd.to_datetime(df['start_date_local']).dt.tz_localize(None)
-df['date_filter'] = df['start_date_local']
+df['date_filter'] = df['start_date_local'] # This is now safe for comparisons
 df['distance_miles'] = df['distance'] / 1609.34
 
 # SIDEBAR
@@ -601,50 +601,53 @@ with tab2:
                     min_len = min(len(v) for v in chart_data.values())
                     chart_df = pd.DataFrame({k: v[:min_len] for k, v in chart_data.items()})
                     
-                    # Create Dual-Axis Plot
-                    fig = go.Figure()
+                    if not chart_df.empty:
+                        # Create Dual-Axis Plot
+                        fig = go.Figure()
 
-                    # 1. Power Trace (Primary Y)
-                    if 'Power' in chart_df.columns:
-                        fig.add_trace(go.Scatter(
-                            x=chart_df['Time'], 
-                            y=chart_df['Power'],
-                            name="Power (W)",
-                            line=dict(color='#FFA500', width=1),
-                            opacity=0.7
-                        ))
+                        # 1. Power Trace (Primary Y)
+                        if 'Power' in chart_df.columns:
+                            fig.add_trace(go.Scatter(
+                                x=chart_df['Time'], 
+                                y=chart_df['Power'],
+                                name="Power (W)",
+                                line=dict(color='#FFA500', width=1),
+                                opacity=0.7
+                            ))
 
-                    # 2. Heart Rate Trace (Secondary Y)
-                    if 'Heart Rate' in chart_df.columns:
-                        fig.add_trace(go.Scatter(
-                            x=chart_df['Time'], 
-                            y=chart_df['Heart Rate'],
-                            name="Heart Rate (bpm)",
-                            line=dict(color='#FF4B4B', width=2),
-                            yaxis="y2"
-                        ))
+                        # 2. Heart Rate Trace (Secondary Y)
+                        if 'Heart Rate' in chart_df.columns:
+                            fig.add_trace(go.Scatter(
+                                x=chart_df['Time'], 
+                                y=chart_df['Heart Rate'],
+                                name="Heart Rate (bpm)",
+                                line=dict(color='#FF4B4B', width=2),
+                                yaxis="y2"
+                            ))
 
-                    # Layout
-                    fig.update_layout(
-                        height=400,
-                        hovermode="x unified",
-                        yaxis=dict(
-                            title="Power (Watts)",
-                            titlefont=dict(color="#FFA500"),
-                            tickfont=dict(color="#FFA500")
-                        ),
-                        yaxis2=dict(
-                            title="Heart Rate (bpm)",
-                            titlefont=dict(color="#FF4B4B"),
-                            tickfont=dict(color="#FF4B4B"),
-                            overlaying="y",
-                            side="right"
-                        ),
-                        xaxis=dict(title="Duration (seconds)"),
-                        margin=dict(l=0, r=0, t=30, b=0),
-                        legend=dict(orientation="h", y=1.1)
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+                        # Layout
+                        fig.update_layout(
+                            height=400,
+                            hovermode="x unified",
+                            yaxis=dict(
+                                title="Power (Watts)",
+                                titlefont=dict(color="#FFA500"),
+                                tickfont=dict(color="#FFA500")
+                            ),
+                            yaxis2=dict(
+                                title="Heart Rate (bpm)",
+                                titlefont=dict(color="#FF4B4B"),
+                                tickfont=dict(color="#FF4B4B"),
+                                overlaying="y",
+                                side="right"
+                            ),
+                            xaxis=dict(title="Duration (seconds)"),
+                            margin=dict(l=0, r=0, t=30, b=0),
+                            legend=dict(orientation="h", y=1.1)
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("Chart data is empty.")
                 else:
                     st.info("Insufficient data for Power/HR chart.")
             # -------------------------------------
