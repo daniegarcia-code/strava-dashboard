@@ -28,6 +28,7 @@ except (KeyError, FileNotFoundError):
 REDIRECT_URI = "https://strava-dashboard-f2xuhecncj4hh7tpmpgupx.streamlit.app" 
 
 def get_auth_url():
+    # UPDATED: Scope set to read_all for private activities
     return (
         f"https://www.strava.com/oauth/authorize?client_id={CLIENT_ID}"
         f"&response_type=code&redirect_uri={REDIRECT_URI}"
@@ -68,6 +69,14 @@ def decode_polyline(polyline_str):
         coordinates.append([lng / 100000.0, lat / 100000.0])
     return coordinates
 
+# --- HELPER: TIME FORMATTER ---
+def format_seconds(seconds):
+    if not seconds or np.isnan(seconds): return "0s"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h > 0: return f"{h}h {m}m"
+    return f"{m}m {s}s"
+
 # --- DATA FETCHING ---
 @st.cache_data(ttl=300)
 def fetch_activities(access_token, num_activities=500):
@@ -99,7 +108,7 @@ def calculate_training_load(df, ftp):
     if ftp <= 0: ftp = 200 
     
     # Ensure columns exist
-    for col in ['average_watts', 'average_heartrate', 'average_speed', 'moving_time', 'total_elevation_gain']:
+    for col in ['average_watts', 'average_heartrate', 'average_speed', 'moving_time', 'elapsed_time', 'total_elevation_gain']:
         if col not in df.columns:
             df[col] = 0.0
             
@@ -107,6 +116,7 @@ def calculate_training_load(df, ftp):
     df['average_watts'] = pd.to_numeric(df['average_watts'], errors='coerce').fillna(0)
     df['average_heartrate'] = pd.to_numeric(df['average_heartrate'], errors='coerce').fillna(0)
     df['moving_time'] = pd.to_numeric(df['moving_time'], errors='coerce').fillna(0)
+    df['elapsed_time'] = pd.to_numeric(df['elapsed_time'], errors='coerce').fillna(0)
     df['total_elevation_gain'] = pd.to_numeric(df['total_elevation_gain'], errors='coerce').fillna(0)
     
     # 1. Calculate Power-based TSS first
@@ -206,7 +216,8 @@ def calculate_pmc(df):
     if df.empty:
         return pd.DataFrame({'date': [], 'CTL': [], 'ATL': [], 'TSB': []})
 
-    df['date_clean'] = pd.to_datetime(df['start_date_local'].dt.date)
+    # Normalize to naive date objects for grouping
+    df['date_clean'] = df['start_date_local'].dt.date
     df['tss_score'] = pd.to_numeric(df['tss_score'], errors='coerce').fillna(0)
 
     daily_tss = df.groupby('date_clean')['tss_score'].sum()
@@ -220,7 +231,12 @@ def calculate_pmc(df):
     tsb = ctl - atl
     
     pmc_df = pd.DataFrame({'CTL': ctl, 'ATL': atl, 'TSB': tsb})
-    return pmc_df.reset_index().rename(columns={'index': 'date'})
+    # Reset index to make 'date' a column
+    pmc_df = pmc_df.reset_index().rename(columns={'index': 'date'})
+    # FIX: Ensure PMC date column is timezone-naive to match st.date_input
+    pmc_df['date'] = pmc_df['date'].dt.tz_localize(None)
+    
+    return pmc_df
 
 def calculate_advanced_metrics(streams, ftp, max_hr):
     metrics = {}
@@ -328,12 +344,11 @@ def ask_gemini(metrics, streams, question):
                     raw_data[key] = val['data']
             
             if raw_data:
-                # --- FIXED: Robust DataFrame creation (Trim to min length) ---
+                # Trim to min length
                 min_len = min(len(v) for v in raw_data.values())
                 raw_data_synced = {k: v[:min_len] for k, v in raw_data.items()}
                 csv_df = pd.DataFrame(raw_data_synced)
                 csv_context = csv_df.to_csv(index=False)
-                # -------------------------------------------------------------
     except Exception as e:
         csv_context = f"[Error processing raw data: {e}]"
 
@@ -366,249 +381,3 @@ if "access_token" not in st.session_state:
         code = query_params["code"]
         token_data = exchange_code_for_token(code)
         if "access_token" in token_data:
-            st.session_state["access_token"] = token_data["access_token"]
-            st.session_state["athlete_name"] = token_data["athlete"]["firstname"]
-            st.query_params.clear()
-            st.rerun()
-        else: st.error("Login failed.")
-    else:
-        st.title("🚴 Endurance Lab Pro")
-        st.write("Connect Strava to access advanced analytics.")
-        st.link_button("Connect with Strava", get_auth_url())
-        st.stop()
-
-st.title(f"Endurance Lab: {st.session_state['athlete_name']}")
-
-with st.spinner("Analyzing training history..."):
-    raw_data = fetch_activities(st.session_state["access_token"])
-if not raw_data:
-    st.warning("No rides found.")
-    st.stop()
-
-df = pd.json_normalize(raw_data)
-df['start_date_local'] = pd.to_datetime(df['start_date_local'])
-df['date_filter'] = df['start_date_local'].dt.tz_localize(None) 
-df['distance_miles'] = df['distance'] / 1609.34
-
-# SIDEBAR
-with st.sidebar:
-    st.header("⚙️ Settings")
-    ftp_input = st.number_input("Your FTP (Watts)", min_value=100, max_value=500, value=250)
-    max_hr_input = st.number_input("Max Heart Rate (bpm)", min_value=100, max_value=220, value=190)
-    st.divider()
-    st.header("📅 Time Frame")
-    min_date, max_date = df['date_filter'].min().date(), df['date_filter'].max().date()
-    default_start = max(min_date, max_date - timedelta(days=90))
-    date_range = st.date_input("Select Range", value=(default_start, max_date), min_value=min_date, max_value=max_date)
-    if st.button("Log Out"):
-        st.session_state.clear()
-        st.rerun()
-
-# 1. Calc Load
-df = calculate_training_load(df, ftp_input)
-
-# 2. DEDUPLICATE (Consolidate Wahoo + Apple Watch)
-df = deduplicate_rides(df)
-
-# 3. Calc PMC
-pmc_data_full = calculate_pmc(df)
-
-if len(date_range) == 2:
-    start_ts = pd.Timestamp(date_range[0])
-    end_ts = pd.Timestamp(date_range[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-    df_display = df[(df['date_filter'] >= start_ts) & (df['date_filter'] <= end_ts)].copy()
-    pmc_display = pmc_data_full[(pmc_data_full['date'] >= start_ts) & (pmc_data_full['date'] <= end_ts)]
-else:
-    df_display = df.copy()
-    pmc_display = pmc_data_full.copy()
-
-tab1, tab2, tab3 = st.tabs(["📈 Performance & Maps", "🔬 Deep Analysis", "📋 Ride Log"])
-
-with tab1:
-    st.subheader("Training Summary")
-    
-    def get_summary_stats(dframe):
-        if dframe.empty:
-            return 0, 0, 0, 0
-        dist = dframe['distance_miles'].sum()
-        hours = dframe['moving_time'].sum() / 3600
-        elev = dframe['total_elevation_gain'].sum() * 3.28084
-        count = len(dframe)
-        return dist, hours, elev, count
-
-    now = datetime.now()
-    date_7d = now - timedelta(days=7)
-    date_30d = now - timedelta(days=30)
-    date_ytd = datetime(now.year, 1, 1)
-
-    d7_stats = get_summary_stats(df[df['date_filter'] >= date_7d])
-    d30_stats = get_summary_stats(df[df['date_filter'] >= date_30d])
-    ytd_stats = get_summary_stats(df[df['date_filter'] >= date_ytd])
-
-    summary_data = {
-        "Metric": ["Distance (miles)", "Time (hours)", "Elevation (ft)", "Rides"],
-        "Last 7 Days": [f"{d7_stats[0]:.1f}", f"{d7_stats[1]:.1f}", f"{d7_stats[2]:,.0f}", f"{d7_stats[3]}"],
-        "Last 30 Days": [f"{d30_stats[0]:.1f}", f"{d30_stats[1]:.1f}", f"{d30_stats[2]:,.0f}", f"{d30_stats[3]}"],
-        "Year to Date": [f"{ytd_stats[0]:.1f}", f"{ytd_stats[1]:.1f}", f"{ytd_stats[2]:,.0f}", f"{ytd_stats[3]}"]
-    }
-    
-    summary_df = pd.DataFrame(summary_data).set_index("Metric")
-    st.dataframe(summary_df, use_container_width=True)
-    
-    st.divider()
-
-    st.subheader("Performance Management")
-    if not pmc_display.empty:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Fitness (CTL)", f"{pmc_display['CTL'].iloc[-1]:.1f}")
-        c2.metric("Fatigue (ATL)", f"{pmc_display['ATL'].iloc[-1]:.1f}")
-        c3.metric("Form (TSB)", f"{pmc_display['TSB'].iloc[-1]:.1f}")
-        
-        fig_pmc = go.Figure()
-        fig_pmc.add_trace(go.Scatter(x=pmc_display['date'], y=pmc_display['CTL'], name='Fitness', line=dict(color='blue')))
-        fig_pmc.add_trace(go.Scatter(x=pmc_display['date'], y=pmc_display['ATL'], name='Fatigue', line=dict(color='magenta')))
-        fig_pmc.add_trace(go.Bar(x=pmc_display['date'], y=pmc_display['TSB'], name='Form', marker_color='orange', opacity=0.5))
-        fig_pmc.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0))
-        st.plotly_chart(fig_pmc, use_container_width=True)
-
-    st.divider()
-    st.subheader(f"Heatmap ({len(df_display)} rides)")
-    if 'map.summary_polyline' in df_display.columns:
-        map_df = df_display[df_display['map.summary_polyline'].notna()].copy()
-        if not map_df.empty:
-            map_df['path'] = map_df['map.summary_polyline'].apply(decode_polyline)
-            map_df = map_df[map_df['path'].map(len) > 0]
-            if not map_df.empty:
-                layer = pdk.Layer("PathLayer", data=map_df, get_path="path", get_color=[255, 75, 75], width_min_pixels=2, opacity=0.8)
-                start_pt = map_df.iloc[0]['path'][0]
-                view_state = pdk.ViewState(latitude=start_pt[1], longitude=start_pt[0], zoom=10)
-                st.pydeck_chart(pdk.Deck(map_style="mapbox://styles/mapbox/light-v9", initial_view_state=view_state, layers=[layer]))
-            else: st.info("No valid routes found.")
-        else: st.info("No map data available.")
-
-with tab2:
-    st.write("### Single Ride Deep Dive")
-    if not df_display.empty:
-        df_display['label'] = df_display['start_date_local'].dt.strftime('%Y-%m-%d %H:%M') + " - " + df_display['name'] + " [" + df_display['device_name'].astype(str) + "]"
-        ride_options = df_display[['label', 'id']].sort_values('label', ascending=False)
-        selected_ride_label = st.selectbox("Choose a Ride:", ride_options['label'])
-        selected_id = ride_options[ride_options['label'] == selected_ride_label]['id'].values[0]
-
-        with st.spinner("Fetching details..."):
-            streams = fetch_streams(st.session_state["access_token"], selected_id)
-            
-            # --- MERGE STREAMS LOGIC ---
-            selected_row = df_display[df_display['id'] == selected_id].iloc[0]
-            if selected_row.get('hr_source_id'):
-                try:
-                    hr_id = int(selected_row['hr_source_id'])
-                    hr_streams = fetch_streams(st.session_state["access_token"], hr_id)
-                    if hr_streams and 'heartrate' in hr_streams:
-                        streams['heartrate'] = hr_streams['heartrate']
-                        st.toast(f"Merged Heart Rate from Apple Watch ride (ID: {hr_id})")
-                except Exception as e:
-                    st.error(f"Failed to merge HR streams: {e}")
-            # ---------------------------
-        
-        if streams:
-            data = calculate_advanced_metrics(streams, ftp_input, max_hr_input)
-            
-            st.markdown("#### ⚡ Power Stats")
-            if data['np']:
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Normalized Power", f"{data['np']:.0f} W")
-                c2.metric("Intensity (IF)", f"{data['if']:.2f}")
-                c3.metric("Variability (VI)", f"{data['vi']:.2f}")
-                work_kj = df[df['id']==selected_id]['kilojoules'].values[0]
-                c4.metric("Work", f"{work_kj:.0f} kJ")
-            else: st.info("No Power Data.")
-
-            st.markdown("#### ❤️ Heart Rate Stats")
-            if data['avg_hr']:
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Avg HR", f"{data['avg_hr']:.0f} bpm")
-                c2.metric("Max HR", f"{data['max_hr']:.0f} bpm")
-                if data['decoupling']: c3.metric("Decoupling", f"{data['decoupling']:.1f}%")
-                else: c3.metric("Decoupling", "N/A")
-                if data['np'] and data['avg_hr'] > 0: c4.metric("Efficiency (EF)", f"{data['np']/data['avg_hr']:.2f}")
-            else: st.info("No Heart Rate Data.")
-
-            st.markdown("#### 💨 Speed & Cadence")
-            c1, c2, c3, c4 = st.columns(4)
-            if data['avg_speed']:
-                c1.metric("Avg Speed", f"{data['avg_speed']:.1f} mph")
-                c2.metric("Max Speed", f"{data['max_speed']:.1f} mph")
-            if data['avg_cadence']: c3.metric("Avg Cadence", f"{data['avg_cadence']:.0f} rpm")
-            
-            st.divider()
-            
-            try:
-                export_data = {}
-                for k, v in streams.items():
-                    if 'data' in v:
-                        export_data[k] = v['data']
-                
-                # --- FIXED: Robust CSV generation (Trim to min length) ---
-                lengths = [len(v) for v in export_data.values()]
-                if lengths:
-                    min_len = min(lengths)
-                    export_data_synced = {k: v[:min_len] for k, v in export_data.items()}
-                    csv_df = pd.DataFrame(export_data_synced)
-                    csv_file = csv_df.to_csv(index=False).encode('utf-8')
-                    
-                    st.download_button(
-                        label="Download Ride Data (CSV)",
-                        data=csv_file,
-                        file_name=f"ride_{selected_id}.csv",
-                        mime="text/csv",
-                    )
-                # ---------------------------------------------------------
-            except Exception as e:
-                st.info(f"CSV download not available: {e}")
-
-            col_chart1, col_chart2 = st.columns(2)
-            with col_chart1:
-                if data['np']:
-                    st.subheader("Power Curve")
-                    dur = list(data['pdc'].keys())
-                    pwr = list(data['pdc'].values())
-                    st.plotly_chart(px.line(x=dur, y=pwr, title="Mean Max Power"), use_container_width=True)
-                else:
-                    st.info("No Power Curve available.")
-            
-            with col_chart2:
-                if 'zone_dist' in data:
-                    st.subheader("Time in Power Zones")
-                    st.plotly_chart(px.bar(data['zone_dist'], orientation='h', title="Power Distribution", labels={'value': 'Seconds', 'index': 'Zone'}), use_container_width=True)
-                
-                if 'hr_zone_dist' in data:
-                    st.subheader("Time in HR Zones (%)")
-                    st.plotly_chart(px.bar(data['hr_zone_dist'], orientation='h', 
-                                         title="Heart Rate Distribution",
-                                         labels={'value': 'Percentage (%)', 'index': 'Zone'},
-                                         text_auto='.1f'), use_container_width=True)
-
-            if GEMINI_AVAILABLE:
-                st.divider()
-                st.subheader("🤖 AI Coach")
-                q = st.text_input("Ask Gemini about this ride:", placeholder="How was my pacing?")
-                if st.button("Ask Coach"):
-                    with st.spinner("Thinking..."):
-                        st.markdown(ask_gemini(data, streams, q))
-        else: st.error("Could not load ride data.")
-    else: st.warning("No rides in selected date range.")
-
-with tab3:
-    st.subheader("Ride Log")
-    cols = [
-        'start_date_local', 'name', 'device_name', 'distance_miles', 'average_speed_mph', 
-        'average_watts', 'variability_index', 'IF', 'efficiency_factor', 
-        'average_heartrate', 'tss_score'
-    ]
-    valid_cols = [c for c in cols if c in df_display.columns]
-    
-    st.dataframe(
-        df_display[valid_cols]
-        .sort_values('start_date_local', ascending=False)
-        .style.format("{:.2f}", subset=[c for c in ['distance_miles', 'average_speed_mph', 'average_watts', 'variability_index', 'IF', 'efficiency_factor', 'tss_score'] if c in df_display.columns])
-    )
