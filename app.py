@@ -24,7 +24,7 @@ except (KeyError, FileNotFoundError):
     st.error("Secrets not found! Please check your .streamlit/secrets.toml file.")
     st.stop()
 
-# REDIRECT_URI = "http://localhost:8501" # Uncomment for local testing
+# REDIRECT_URI = "https://strava-dashboard-f2xuhecncj4hh7tpmpgupx.streamlit.app" 
 REDIRECT_URI = "https://strava-dashboard-f2xuhecncj4hh7tpmpgupx.streamlit.app" 
 
 def get_auth_url():
@@ -405,7 +405,7 @@ if not raw_data:
 df = pd.json_normalize(raw_data)
 # FIX: GLOBAL TIMEZONE STRIP - Convert to datetime, then strip timezone IMMEDIATELY
 df['start_date_local'] = pd.to_datetime(df['start_date_local']).dt.tz_localize(None)
-df['date_filter'] = df['start_date_local'] # This is now safe for comparisons
+df['date_filter'] = df['start_date_local'] 
 df['distance_miles'] = df['distance'] / 1609.34
 
 # SIDEBAR
@@ -583,73 +583,90 @@ with tab2:
                 }
                 st.dataframe(pd.DataFrame(table3), hide_index=True, use_container_width=True)
 
-            # --- NEW: Interactive Dual-Axis Chart ---
+            # --- NEW: Robust Interactive Chart ---
             st.divider()
             st.subheader("📊 Power vs. Heart Rate Analysis")
             
-            # Prepare Chart Data
-            chart_data = {}
-            if 'time' in streams:
-                chart_data['Time'] = streams['time']['data']
-                if 'watts' in streams:
-                    chart_data['Power'] = streams['watts']['data']
-                if 'heartrate' in streams:
-                    chart_data['Heart Rate'] = streams['heartrate']['data']
-                
-                # Check if data exists before processing
-                if chart_data and len(chart_data) > 1:
-                    min_len = min(len(v) for v in chart_data.values())
-                    chart_df = pd.DataFrame({k: v[:min_len] for k, v in chart_data.items()})
+            try:
+                # Prepare Chart Data
+                chart_data = {}
+                if 'time' in streams:
+                    chart_data['Time'] = streams['time']['data']
+                    if 'watts' in streams:
+                        chart_data['Power'] = streams['watts']['data']
+                    if 'heartrate' in streams:
+                        chart_data['Heart Rate'] = streams['heartrate']['data']
                     
-                    if not chart_df.empty:
-                        # Create Dual-Axis Plot
-                        fig = go.Figure()
+                    if chart_data and len(chart_data) > 1:
+                        min_len = min(len(v) for v in chart_data.values())
+                        chart_df = pd.DataFrame({k: v[:min_len] for k, v in chart_data.items()})
+                        
+                        if not chart_df.empty:
+                            fig = go.Figure()
+                            
+                            # Smart Axis Logic
+                            has_power = 'Power' in chart_df.columns
+                            has_hr = 'Heart Rate' in chart_df.columns
+                            
+                            # 1. Power Trace
+                            if has_power:
+                                fig.add_trace(go.Scatter(
+                                    x=chart_df['Time'], y=chart_df['Power'],
+                                    name="Power (W)", line=dict(color='#FFA500', width=1), opacity=0.7
+                                ))
+                            
+                            # 2. Heart Rate Trace
+                            if has_hr:
+                                # If Power exists, map HR to Y2. If not, HR stays on Y1.
+                                y_axis_name = "y2" if has_power else "y"
+                                fig.add_trace(go.Scatter(
+                                    x=chart_df['Time'], y=chart_df['Heart Rate'],
+                                    name="Heart Rate (bpm)", line=dict(color='#FF4B4B', width=2),
+                                    yaxis=y_axis_name
+                                ))
 
-                        # 1. Power Trace (Primary Y)
-                        if 'Power' in chart_df.columns:
-                            fig.add_trace(go.Scatter(
-                                x=chart_df['Time'], 
-                                y=chart_df['Power'],
-                                name="Power (W)",
-                                line=dict(color='#FFA500', width=1),
-                                opacity=0.7
-                            ))
+                            # 3. Dynamic Layout
+                            layout_opts = dict(
+                                height=400,
+                                hovermode="x unified",
+                                xaxis=dict(title="Duration (seconds)"),
+                                margin=dict(l=0, r=0, t=30, b=0),
+                                legend=dict(orientation="h", y=1.1)
+                            )
+                            
+                            if has_power:
+                                layout_opts['yaxis'] = dict(
+                                    title="Power (Watts)", 
+                                    titlefont=dict(color="#FFA500"), 
+                                    tickfont=dict(color="#FFA500")
+                                )
+                                
+                            if has_hr:
+                                if has_power:
+                                    # Dual Axis Mode
+                                    layout_opts['yaxis2'] = dict(
+                                        title="Heart Rate (bpm)",
+                                        titlefont=dict(color="#FF4B4B"),
+                                        tickfont=dict(color="#FF4B4B"),
+                                        overlaying="y",
+                                        side="right"
+                                    )
+                                else:
+                                    # Single Axis Mode (HR only)
+                                    layout_opts['yaxis'] = dict(
+                                        title="Heart Rate (bpm)", 
+                                        titlefont=dict(color="#FF4B4B"), 
+                                        tickfont=dict(color="#FF4B4B")
+                                    )
 
-                        # 2. Heart Rate Trace (Secondary Y)
-                        if 'Heart Rate' in chart_df.columns:
-                            fig.add_trace(go.Scatter(
-                                x=chart_df['Time'], 
-                                y=chart_df['Heart Rate'],
-                                name="Heart Rate (bpm)",
-                                line=dict(color='#FF4B4B', width=2),
-                                yaxis="y2"
-                            ))
-
-                        # Layout
-                        fig.update_layout(
-                            height=400,
-                            hovermode="x unified",
-                            yaxis=dict(
-                                title="Power (Watts)",
-                                titlefont=dict(color="#FFA500"),
-                                tickfont=dict(color="#FFA500")
-                            ),
-                            yaxis2=dict(
-                                title="Heart Rate (bpm)",
-                                titlefont=dict(color="#FF4B4B"),
-                                tickfont=dict(color="#FF4B4B"),
-                                overlaying="y",
-                                side="right"
-                            ),
-                            xaxis=dict(title="Duration (seconds)"),
-                            margin=dict(l=0, r=0, t=30, b=0),
-                            legend=dict(orientation="h", y=1.1)
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+                            fig.update_layout(**layout_opts)
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info("Chart data is empty.")
                     else:
-                        st.info("Chart data is empty.")
-                else:
-                    st.info("Insufficient data for Power/HR chart.")
+                        st.info("Insufficient data for Power/HR chart.")
+            except Exception as e:
+                st.warning(f"Could not render chart: {e}")
             # -------------------------------------
 
             st.divider()
