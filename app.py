@@ -531,41 +531,118 @@ with tab2:
         if streams:
             data = calculate_advanced_metrics(streams, ftp_input, max_hr_input)
             
-            # --- UPDATED: Data Display as TABLE ---
+            # --- UPDATED: 3 Split Tables ---
             st.subheader("Ride Metrics")
             
-            # 1. Gather Metrics from Data & Summary
-            metrics_dict = {
-                "Metric": [
-                    "Distance", "Total Duration", "Moving Time", "Work", "TSS",
-                    "Normalized Power (NP)", "Intensity (IF)", "Variability (VI)", 
-                    "Avg Heart Rate", "Max Heart Rate", "Decoupling", "Efficiency (EF)",
-                    "Avg Speed", "Max Speed", "Avg Cadence"
-                ],
-                "Value": [
-                    f"{selected_row['distance_miles']:.1f} mi",
-                    format_seconds(selected_row.get('elapsed_time', 0)),
-                    format_seconds(selected_row.get('moving_time', 0)),
-                    f"{selected_row.get('kilojoules', 0):.0f} kJ",
-                    f"{selected_row.get('tss_score', 0):.0f}",
-                    
-                    f"{data['np']:.0f} W" if data['np'] else "N/A",
-                    f"{data['if']:.2f}" if data['if'] else "N/A",
-                    f"{data['vi']:.2f}" if data['vi'] else "N/A",
-                    
-                    f"{data['avg_hr']:.0f} bpm" if data['avg_hr'] else "N/A",
-                    f"{data['max_hr']:.0f} bpm" if data['max_hr'] else "N/A",
-                    f"{data['decoupling']:.1f}%" if data['decoupling'] else "N/A",
-                    f"{data['np']/data['avg_hr']:.2f}" if (data['np'] and data['avg_hr']) else "N/A",
-                    
-                    f"{data['avg_speed']:.1f} mph" if data['avg_speed'] else "N/A",
-                    f"{data['max_speed']:.1f} mph" if data['max_speed'] else "N/A",
-                    f"{data['avg_cadence']:.0f} rpm" if data['avg_cadence'] else "N/A"
-                ]
-            }
+            t1, t2, t3 = st.columns(3)
             
-            metrics_df = pd.DataFrame(metrics_dict)
-            st.dataframe(metrics_df, hide_index=True, use_container_width=True)
+            with t1:
+                st.caption("📏 Speed & Distance")
+                table1 = {
+                    "Metric": ["Distance", "Total Time", "Moving Time", "Avg Speed", "Max Speed", "Avg Cadence"],
+                    "Value": [
+                        f"{selected_row['distance_miles']:.1f} mi",
+                        format_seconds(selected_row.get('elapsed_time', 0)),
+                        format_seconds(selected_row.get('moving_time', 0)),
+                        f"{data['avg_speed']:.1f} mph" if data['avg_speed'] else "N/A",
+                        f"{data['max_speed']:.1f} mph" if data['max_speed'] else "N/A",
+                        f"{data['avg_cadence']:.0f} rpm" if data['avg_cadence'] else "N/A"
+                    ]
+                }
+                st.dataframe(pd.DataFrame(table1), hide_index=True, use_container_width=True)
+
+            with t2:
+                st.caption("❤️ Heart Rate")
+                table2 = {
+                    "Metric": ["Avg HR", "Max HR", "Decoupling"],
+                    "Value": [
+                        f"{data['avg_hr']:.0f} bpm" if data['avg_hr'] else "N/A",
+                        f"{data['max_hr']:.0f} bpm" if data['max_hr'] else "N/A",
+                        f"{data['decoupling']:.1f}%" if data['decoupling'] else "N/A"
+                    ]
+                }
+                st.dataframe(pd.DataFrame(table2), hide_index=True, use_container_width=True)
+
+            with t3:
+                st.caption("⚡ Power & Load")
+                table3 = {
+                    "Metric": ["Avg Power", "Norm Power (NP)", "Work", "Intensity (IF)", "Variability (VI)", "TSS", "Efficiency (EF)"],
+                    "Value": [
+                        f"{data['avg_pwr']:.0f} W" if data.get('avg_pwr') else "N/A",
+                        f"{data['np']:.0f} W" if data['np'] else "N/A",
+                        f"{selected_row.get('kilojoules', 0):.0f} kJ",
+                        f"{data['if']:.2f}" if data['if'] else "N/A",
+                        f"{data['vi']:.2f}" if data['vi'] else "N/A",
+                        f"{selected_row.get('tss_score', 0):.0f}",
+                        f"{data['np']/data['avg_hr']:.2f}" if (data['np'] and data['avg_hr']) else "N/A"
+                    ]
+                }
+                st.dataframe(pd.DataFrame(table3), hide_index=True, use_container_width=True)
+
+            # --- NEW: Interactive Dual-Axis Chart ---
+            st.divider()
+            st.subheader("📊 Power vs. Heart Rate Analysis")
+            
+            # Prepare Chart Data
+            chart_data = {}
+            if 'time' in streams:
+                chart_data['Time'] = streams['time']['data']
+                if 'watts' in streams:
+                    chart_data['Power'] = streams['watts']['data']
+                if 'heartrate' in streams:
+                    chart_data['Heart Rate'] = streams['heartrate']['data']
+                
+                # Align lengths
+                min_len = min(len(v) for v in chart_data.values())
+                chart_df = pd.DataFrame({k: v[:min_len] for k, v in chart_data.items()})
+                
+                # Create Dual-Axis Plot
+                fig = go.Figure()
+
+                # 1. Power Trace (Primary Y)
+                if 'Power' in chart_df.columns:
+                    fig.add_trace(go.Scatter(
+                        x=chart_df['Time'], 
+                        y=chart_df['Power'],
+                        name="Power (W)",
+                        line=dict(color='#FFA500', width=1),
+                        opacity=0.7
+                    ))
+
+                # 2. Heart Rate Trace (Secondary Y)
+                if 'Heart Rate' in chart_df.columns:
+                    fig.add_trace(go.Scatter(
+                        x=chart_df['Time'], 
+                        y=chart_df['Heart Rate'],
+                        name="Heart Rate (bpm)",
+                        line=dict(color='#FF4B4B', width=2),
+                        yaxis="y2"
+                    ))
+
+                # Layout
+                fig.update_layout(
+                    height=400,
+                    hovermode="x unified",
+                    yaxis=dict(
+                        title="Power (Watts)",
+                        titlefont=dict(color="#FFA500"),
+                        tickfont=dict(color="#FFA500")
+                    ),
+                    yaxis2=dict(
+                        title="Heart Rate (bpm)",
+                        titlefont=dict(color="#FF4B4B"),
+                        tickfont=dict(color="#FF4B4B"),
+                        overlaying="y",
+                        side="right"
+                    ),
+                    xaxis=dict(title="Duration (seconds)"),
+                    margin=dict(l=0, r=0, t=30, b=0),
+                    legend=dict(orientation="h", y=1.1)
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No stream data available for chart.")
             # -------------------------------------
 
             st.divider()
