@@ -508,23 +508,43 @@ with tab1:
         # Race Params
         RACE_DIST_MILES = 62.13  # 100km
         
+        # User input for race intensity
+        default_race_hr = int(max_hr_input * 0.85) # Default to 85% Max HR
+        race_target_hr = st.slider("Target Race Heart Rate (bpm)", min_value=100, max_value=max_hr_input, value=default_race_hr)
+        
         predictions = []
         
         for _, row in last_5_rides.iterrows():
             avg_speed = row['average_speed_mph']
-            if avg_speed > 5:  # Filter out bad data/walks
-                pred_time_hours = RACE_DIST_MILES / avg_speed
+            avg_hr = row['average_heartrate']
+            
+            # Only predict if valid data exists (speed > 5mph, HR > 80bpm to avoid errors)
+            if avg_speed > 5 and avg_hr > 80:
+                # EFFICIENCY CALCULATION: Speed per Beat
+                efficiency_speed_factor = avg_speed / avg_hr
+                
+                # PROJECTED RACE SPEED
+                pred_race_speed = efficiency_speed_factor * race_target_hr
+                
+                # Cap prediction to realistic physics (e.g., diminishing returns at high speed due to wind drag)
+                # Simple dampener: if prediction > 25mph, assume wind resistance eats 20% of extra effort
+                if pred_race_speed > 25:
+                    pred_race_speed = 25 + (pred_race_speed - 25) * 0.5
+                
+                pred_time_hours = RACE_DIST_MILES / pred_race_speed
+                
                 predictions.append({
                     'Date': row['start_date_local'],
                     'Ride': row['name'],
-                    'Avg Speed': avg_speed,
+                    'Training HR': f"{avg_hr:.0f} bpm",
+                    'Efficiency': f"{efficiency_speed_factor:.2f}",
+                    'Pred Speed': pred_race_speed,
                     'Predicted Time': pred_time_hours
                 })
         
         if predictions:
             pred_df = pd.DataFrame(predictions).sort_values('Date')
             
-            # Format time for display (e.g., 3.5 hrs -> 3h 30m)
             def format_race_time(h):
                 mins = int((h - int(h)) * 60)
                 return f"{int(h)}h {mins}m"
@@ -533,7 +553,7 @@ with tab1:
             best_pred = min(p['Predicted Time'] for p in predictions)
             
             c1, c2 = st.columns(2)
-            c1.metric("Predicted Finish (Avg)", format_race_time(avg_pred))
+            c1.metric("Predicted Finish (Avg)", format_race_time(avg_pred), help=f"Based on effort of {race_target_hr} bpm")
             c2.metric("Best Potential Finish", format_race_time(best_pred))
             
             # Trend Chart
@@ -542,15 +562,15 @@ with tab1:
                 x='Date', 
                 y='Predicted Time',
                 markers=True,
-                title="Predicted Finish Time based on recent rides"
+                title=f"Predicted Time at Race Intensity ({race_target_hr} bpm)",
+                hover_data=['Ride', 'Training HR', 'Efficiency']
             )
-            # Invert Y axis so "Lower Time" (faster) is higher visually, or just label clearly
             fig_race.update_layout(yaxis=dict(title="Predicted Time (Hours)", autorange="reversed")) 
             st.plotly_chart(fig_race, use_container_width=True)
             
-            st.caption("Prediction assumes maintaining your training speed over 62 miles.")
+            st.caption("Prediction normalizes your training speed by Heart Rate. E.g. A slow ride with low HR will still predict a fast time if your efficiency is high.")
         else:
-            st.info("Training rides too short/slow to predict race pace.")
+            st.info("Training rides missing Heart Rate data. Cannot predict based on efficiency.")
     else:
         st.info("No recent rides found for prediction.")
 
