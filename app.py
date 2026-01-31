@@ -497,27 +497,43 @@ with tab1:
         fig_pmc.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0))
         st.plotly_chart(fig_pmc, use_container_width=True)
 
-    # --- RACE PREDICTOR (Tour de Scottsdale) ---
+    # --- RACE PREDICTOR (Generic) ---
     st.divider()
-    st.subheader("🏁 Race Predictor: Tour de Scottsdale (62 mi)")
+    st.subheader("🏁 Race Predictor")
     
     # 1. Filter Last 5 Rides (sorted by date)
     last_5_rides = df_display.sort_values('start_date_local', ascending=False).head(5)
     
     if not last_5_rides.empty:
-        c_p1, c_p2 = st.columns(2)
-        with c_p1:
-            # User input for race intensity
-            default_race_hr = int(max_hr_input * 0.85) # Default to 85% Max HR
-            race_target_hr = st.slider("Target Race Heart Rate (bpm)", min_value=100, max_value=max_hr_input, value=default_race_hr)
-        with c_p2:
-            # User input for Race Elevation
-            race_elev_ft = st.number_input("Race Elevation Gain (ft)", min_value=0, value=2800)
-
-        # Race Params
-        RACE_DIST_MILES = 62.13  # 100km
-        RACE_CLIMB_DENSITY = race_elev_ft / RACE_DIST_MILES # ft per mile
+        c_p1, c_p2, c_p3 = st.columns(3)
         
+        with c_p1:
+            # Distance Field (Text input to avoid spinner)
+            race_dist_str = st.text_input("Race Distance (miles)", value="62.13")
+            try:
+                RACE_DIST_MILES = float(race_dist_str)
+            except ValueError:
+                RACE_DIST_MILES = 62.13
+                
+        with c_p2:
+            # Elevation Field (Text input)
+            race_elev_str = st.text_input("Elevation Gain (ft)", value="2800")
+            try:
+                race_elev_ft = float(race_elev_str)
+            except ValueError:
+                race_elev_ft = 2800.0
+
+        with c_p3:
+            # HR Slider
+            default_race_hr = int(max_hr_input * 0.85) 
+            race_target_hr = st.slider("Target Race HR (bpm)", min_value=100, max_value=max_hr_input, value=default_race_hr)
+
+        # Calc Density
+        if RACE_DIST_MILES > 0:
+            RACE_CLIMB_DENSITY = race_elev_ft / RACE_DIST_MILES # ft per mile
+        else:
+            RACE_CLIMB_DENSITY = 0
+            
         predictions = []
         
         for _, row in last_5_rides.iterrows():
@@ -541,18 +557,15 @@ with tab1:
                 # Difference: Positive = Race is Hiller. Negative = Ride was Hillier.
                 climb_diff = RACE_CLIMB_DENSITY - ride_climb_density
                 
-                # Hill Penalty Coefficient: 0.4% speed loss per 1 ft/mile difference
-                # Example: If race has 50 ft/mi more climbing, speed drops by 20% (50 * 0.004 = 0.2)
-                # Cap minimum speed factor at 0.5 (50% speed) to prevent crashes on extreme inputs
+                # Hill Penalty: 0.4% speed loss per 1 ft/mile difference
                 hill_factor = max(0.5, 1.0 - (climb_diff * 0.004))
                 
                 # 4. FINAL ADJUSTED SPEED
                 final_pred_speed = raw_race_speed * hill_factor
                 
-                # Cap speed at 28mph (realistic physics limit for most amateurs)
-                if final_pred_speed > 28: final_pred_speed = 28
+                if final_pred_speed > 28: final_pred_speed = 28 # Physics cap
                 
-                pred_time_hours = RACE_DIST_MILES / final_pred_speed
+                pred_time_hours = RACE_DIST_MILES / final_pred_speed if final_pred_speed > 0 else 0
                 
                 predictions.append({
                     'Date': row['start_date_local'],
@@ -566,29 +579,34 @@ with tab1:
             pred_df = pd.DataFrame(predictions).sort_values('Date')
             
             def format_race_time(h):
+                if h <= 0: return "N/A"
                 mins = int((h - int(h)) * 60)
                 return f"{int(h)}h {mins}m"
 
-            avg_pred = sum(p['Predicted Time'] for p in predictions) / len(predictions)
-            best_pred = min(p['Predicted Time'] for p in predictions)
-            
-            c1, c2 = st.columns(2)
-            c1.metric("Predicted Finish (Avg)", format_race_time(avg_pred), help="Adjusted for Heart Rate & Elevation")
-            c2.metric("Best Potential Finish", format_race_time(best_pred))
-            
-            # Trend Chart
-            fig_race = px.line(
-                pred_df, 
-                x='Date', 
-                y='Predicted Time',
-                markers=True,
-                title=f"Predicted Time (Adj. for {race_elev_ft}ft climbing)",
-                hover_data=['Ride', 'Climb (ft/mi)', 'Hill Factor']
-            )
-            fig_race.update_layout(yaxis=dict(title="Predicted Time (Hours)", autorange="reversed")) 
-            st.plotly_chart(fig_race, use_container_width=True)
-            
-            st.caption(f"Prediction accounts for HR intensity AND elevation difference. \n(Race has {RACE_CLIMB_DENSITY:.0f} ft/mile climbing).")
+            valid_preds = [p['Predicted Time'] for p in predictions if p['Predicted Time'] > 0]
+            if valid_preds:
+                avg_pred = sum(valid_preds) / len(valid_preds)
+                best_pred = min(valid_preds)
+                
+                c1, c2 = st.columns(2)
+                c1.metric("Predicted Finish (Avg)", format_race_time(avg_pred))
+                c2.metric("Best Potential Finish", format_race_time(best_pred))
+                
+                # Trend Chart
+                fig_race = px.line(
+                    pred_df, 
+                    x='Date', 
+                    y='Predicted Time',
+                    markers=True,
+                    title=f"Predicted Time at {race_target_hr} bpm (Adj. for Elevation)",
+                    hover_data=['Ride', 'Climb (ft/mi)', 'Hill Factor']
+                )
+                fig_race.update_layout(yaxis=dict(title="Predicted Time (Hours)", autorange="reversed")) 
+                st.plotly_chart(fig_race, use_container_width=True)
+                
+                st.caption(f"Based on {RACE_DIST_MILES} miles with {race_elev_ft} ft of climbing.")
+            else:
+                st.info("Invalid prediction data.")
         else:
             st.info("Training rides missing Heart Rate data. Cannot predict.")
     else:
