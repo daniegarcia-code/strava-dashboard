@@ -497,7 +497,64 @@ with tab1:
         fig_pmc.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0))
         st.plotly_chart(fig_pmc, use_container_width=True)
 
-    # --- NEW: Efficiency Factor Chart (Robust Manual Trendline) ---
+    # --- RACE PREDICTOR (Tour de Scottsdale) ---
+    st.divider()
+    st.subheader("🏁 Race Predictor: Tour de Scottsdale (62 mi)")
+    
+    # 1. Filter Last 5 Rides (sorted by date)
+    last_5_rides = df_display.sort_values('start_date_local', ascending=False).head(5)
+    
+    if not last_5_rides.empty:
+        # Race Params
+        RACE_DIST_MILES = 62.13  # 100km
+        
+        predictions = []
+        
+        for _, row in last_5_rides.iterrows():
+            avg_speed = row['average_speed_mph']
+            if avg_speed > 5:  # Filter out bad data/walks
+                pred_time_hours = RACE_DIST_MILES / avg_speed
+                predictions.append({
+                    'Date': row['start_date_local'],
+                    'Ride': row['name'],
+                    'Avg Speed': avg_speed,
+                    'Predicted Time': pred_time_hours
+                })
+        
+        if predictions:
+            pred_df = pd.DataFrame(predictions).sort_values('Date')
+            
+            # Format time for display (e.g., 3.5 hrs -> 3h 30m)
+            def format_race_time(h):
+                mins = int((h - int(h)) * 60)
+                return f"{int(h)}h {mins}m"
+
+            avg_pred = sum(p['Predicted Time'] for p in predictions) / len(predictions)
+            best_pred = min(p['Predicted Time'] for p in predictions)
+            
+            c1, c2 = st.columns(2)
+            c1.metric("Predicted Finish (Avg)", format_race_time(avg_pred))
+            c2.metric("Best Potential Finish", format_race_time(best_pred))
+            
+            # Trend Chart
+            fig_race = px.line(
+                pred_df, 
+                x='Date', 
+                y='Predicted Time',
+                markers=True,
+                title="Predicted Finish Time based on recent rides"
+            )
+            # Invert Y axis so "Lower Time" (faster) is higher visually, or just label clearly
+            fig_race.update_layout(yaxis=dict(title="Predicted Time (Hours)", autorange="reversed")) 
+            st.plotly_chart(fig_race, use_container_width=True)
+            
+            st.caption("Prediction assumes maintaining your training speed over 62 miles.")
+        else:
+            st.info("Training rides too short/slow to predict race pace.")
+    else:
+        st.info("No recent rides found for prediction.")
+
+    # --- Efficiency Factor Chart (Robust Manual Trendline) ---
     st.divider()
     st.subheader("Efficiency Factor (EF) Over Time")
     
