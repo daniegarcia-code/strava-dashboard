@@ -505,40 +505,60 @@ with tab1:
     last_5_rides = df_display.sort_values('start_date_local', ascending=False).head(5)
     
     if not last_5_rides.empty:
+        c_p1, c_p2 = st.columns(2)
+        with c_p1:
+            # User input for race intensity
+            default_race_hr = int(max_hr_input * 0.85) # Default to 85% Max HR
+            race_target_hr = st.slider("Target Race Heart Rate (bpm)", min_value=100, max_value=max_hr_input, value=default_race_hr)
+        with c_p2:
+            # User input for Race Elevation
+            race_elev_ft = st.number_input("Race Elevation Gain (ft)", min_value=0, value=2800)
+
         # Race Params
         RACE_DIST_MILES = 62.13  # 100km
-        
-        # User input for race intensity
-        default_race_hr = int(max_hr_input * 0.85) # Default to 85% Max HR
-        race_target_hr = st.slider("Target Race Heart Rate (bpm)", min_value=100, max_value=max_hr_input, value=default_race_hr)
+        RACE_CLIMB_DENSITY = race_elev_ft / RACE_DIST_MILES # ft per mile
         
         predictions = []
         
         for _, row in last_5_rides.iterrows():
             avg_speed = row['average_speed_mph']
             avg_hr = row['average_heartrate']
+            ride_dist = row['distance_miles']
             
-            # Only predict if valid data exists (speed > 5mph, HR > 80bpm to avoid errors)
-            if avg_speed > 5 and avg_hr > 80:
-                # EFFICIENCY CALCULATION: Speed per Beat
-                efficiency_speed_factor = avg_speed / avg_hr
+            # Ensure valid data
+            if avg_speed > 5 and avg_hr > 80 and ride_dist > 0:
+                # 1. BASE EFFICIENCY: Speed per Beat (mph/bpm)
+                base_efficiency = avg_speed / avg_hr
                 
-                # PROJECTED RACE SPEED
-                pred_race_speed = efficiency_speed_factor * race_target_hr
+                # 2. RAW PROJECTED SPEED (at Race HR)
+                raw_race_speed = base_efficiency * race_target_hr
                 
-                # Cap prediction to realistic physics (e.g., diminishing returns at high speed due to wind drag)
-                # Simple dampener: if prediction > 25mph, assume wind resistance eats 20% of extra effort
-                if pred_race_speed > 25:
-                    pred_race_speed = 25 + (pred_race_speed - 25) * 0.5
+                # 3. ELEVATION CORRECTION (Hill Penalty)
+                # Calculate Ride Climbing Density (ft/mile)
+                ride_climb_ft = row['total_elevation_gain'] * 3.28084
+                ride_climb_density = ride_climb_ft / ride_dist
                 
-                pred_time_hours = RACE_DIST_MILES / pred_race_speed
+                # Difference: Positive = Race is Hiller. Negative = Ride was Hillier.
+                climb_diff = RACE_CLIMB_DENSITY - ride_climb_density
+                
+                # Hill Penalty Coefficient: 0.4% speed loss per 1 ft/mile difference
+                # Example: If race has 50 ft/mi more climbing, speed drops by 20% (50 * 0.004 = 0.2)
+                # Cap minimum speed factor at 0.5 (50% speed) to prevent crashes on extreme inputs
+                hill_factor = max(0.5, 1.0 - (climb_diff * 0.004))
+                
+                # 4. FINAL ADJUSTED SPEED
+                final_pred_speed = raw_race_speed * hill_factor
+                
+                # Cap speed at 28mph (realistic physics limit for most amateurs)
+                if final_pred_speed > 28: final_pred_speed = 28
+                
+                pred_time_hours = RACE_DIST_MILES / final_pred_speed
                 
                 predictions.append({
                     'Date': row['start_date_local'],
                     'Ride': row['name'],
-                    'Training HR': f"{avg_hr:.0f} bpm",
-                    'Efficiency': f"{efficiency_speed_factor:.2f}",
-                    'Pred Speed': pred_race_speed,
+                    'Climb (ft/mi)': f"{ride_climb_density:.0f}",
+                    'Hill Factor': f"{hill_factor:.2f}x",
                     'Predicted Time': pred_time_hours
                 })
         
@@ -553,7 +573,7 @@ with tab1:
             best_pred = min(p['Predicted Time'] for p in predictions)
             
             c1, c2 = st.columns(2)
-            c1.metric("Predicted Finish (Avg)", format_race_time(avg_pred), help=f"Based on effort of {race_target_hr} bpm")
+            c1.metric("Predicted Finish (Avg)", format_race_time(avg_pred), help="Adjusted for Heart Rate & Elevation")
             c2.metric("Best Potential Finish", format_race_time(best_pred))
             
             # Trend Chart
@@ -562,15 +582,15 @@ with tab1:
                 x='Date', 
                 y='Predicted Time',
                 markers=True,
-                title=f"Predicted Time at Race Intensity ({race_target_hr} bpm)",
-                hover_data=['Ride', 'Training HR', 'Efficiency']
+                title=f"Predicted Time (Adj. for {race_elev_ft}ft climbing)",
+                hover_data=['Ride', 'Climb (ft/mi)', 'Hill Factor']
             )
             fig_race.update_layout(yaxis=dict(title="Predicted Time (Hours)", autorange="reversed")) 
             st.plotly_chart(fig_race, use_container_width=True)
             
-            st.caption("Prediction normalizes your training speed by Heart Rate. E.g. A slow ride with low HR will still predict a fast time if your efficiency is high.")
+            st.caption(f"Prediction accounts for HR intensity AND elevation difference. \n(Race has {RACE_CLIMB_DENSITY:.0f} ft/mile climbing).")
         else:
-            st.info("Training rides missing Heart Rate data. Cannot predict based on efficiency.")
+            st.info("Training rides missing Heart Rate data. Cannot predict.")
     else:
         st.info("No recent rides found for prediction.")
 
