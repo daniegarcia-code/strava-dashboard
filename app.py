@@ -419,23 +419,19 @@ with st.sidebar:
     max_hr_input = st.number_input("Max Heart Rate (bpm)", min_value=100, max_value=220, value=190)
     st.divider()
     
-    # --- UPDATED: DATE SLIDER ---
-    st.header("📅 Time Frame")
-    
-    # Get min and max dates from data
+    # --- UPDATED: GLOBAL DATE SLIDER (90 Day Default) ---
+    st.header("📅 Global Time Frame")
     min_date = df['date_filter'].min().date()
     max_date = df['date_filter'].max().date()
-    
-    # Default: Last 90 days or max range available
     default_start = max(min_date, max_date - timedelta(days=90))
     
-    # Create slider
     date_range = st.slider(
-        "Select Date Range",
+        "Select Range",
         min_value=min_date,
         max_value=max_date,
         value=(default_start, max_date),
-        format="MM/DD/YY"
+        format="MM/DD/YY",
+        key="global_slider"
     )
     # ----------------------------
     
@@ -514,18 +510,37 @@ with tab1:
         fig_pmc.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0))
         st.plotly_chart(fig_pmc, use_container_width=True)
 
-    # --- RACE PREDICTOR (Generic) ---
+    # --- RACE PREDICTOR (Independent Date Control) ---
     st.divider()
     st.subheader("🏁 Race Predictor")
     
-    # 1. Filter Last 5 Rides (sorted by date)
-    last_5_rides = df_display.sort_values('start_date_local', ascending=False).head(5)
+    # 1. Independent Date Slider for Prediction Data
+    st.write("Select Training Data Window for Prediction:")
+    pred_min_date = df['date_filter'].min().date()
+    pred_max_date = df['date_filter'].max().date()
     
-    if not last_5_rides.empty:
+    # Default to last 30 days
+    pred_default_start = max(pred_min_date, pred_max_date - timedelta(days=30))
+    
+    pred_date_range = st.slider(
+        "Training Window",
+        min_value=pred_min_date,
+        max_value=pred_max_date,
+        value=(pred_default_start, pred_max_date),
+        format="MM/DD/YY",
+        key="pred_slider"
+    )
+    
+    # 2. Filter Full Dataset by Local Slider (Ignoring Main Sidebar)
+    p_start_ts = pd.Timestamp(pred_date_range[0])
+    p_end_ts = pd.Timestamp(pred_date_range[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    
+    df_race = df[(df['date_filter'] >= p_start_ts) & (df['date_filter'] <= p_end_ts)].sort_values('start_date_local')
+    
+    if not df_race.empty:
         c_p1, c_p2, c_p3 = st.columns(3)
         
         with c_p1:
-            # Distance Field (Text input to avoid spinner)
             race_dist_str = st.text_input("Race Distance (miles)", value="62.13")
             try:
                 RACE_DIST_MILES = float(race_dist_str)
@@ -533,7 +548,6 @@ with tab1:
                 RACE_DIST_MILES = 62.13
                 
         with c_p2:
-            # Elevation Field (Text input)
             race_elev_str = st.text_input("Elevation Gain (ft)", value="2800")
             try:
                 race_elev_ft = float(race_elev_str)
@@ -541,46 +555,33 @@ with tab1:
                 race_elev_ft = 2800.0
 
         with c_p3:
-            # HR Slider
             default_race_hr = int(max_hr_input * 0.85) 
             race_target_hr = st.slider("Target Race HR (bpm)", min_value=100, max_value=max_hr_input, value=default_race_hr)
 
-        # Calc Density
         if RACE_DIST_MILES > 0:
-            RACE_CLIMB_DENSITY = race_elev_ft / RACE_DIST_MILES # ft per mile
+            RACE_CLIMB_DENSITY = race_elev_ft / RACE_DIST_MILES
         else:
             RACE_CLIMB_DENSITY = 0
             
         predictions = []
         
-        for _, row in last_5_rides.iterrows():
+        for _, row in df_race.iterrows():
             avg_speed = row['average_speed_mph']
             avg_hr = row['average_heartrate']
             ride_dist = row['distance_miles']
             
-            # Ensure valid data
             if avg_speed > 5 and avg_hr > 80 and ride_dist > 0:
-                # 1. BASE EFFICIENCY: Speed per Beat (mph/bpm)
                 base_efficiency = avg_speed / avg_hr
-                
-                # 2. RAW PROJECTED SPEED (at Race HR)
                 raw_race_speed = base_efficiency * race_target_hr
                 
-                # 3. ELEVATION CORRECTION (Hill Penalty)
-                # Calculate Ride Climbing Density (ft/mile)
                 ride_climb_ft = row['total_elevation_gain'] * 3.28084
                 ride_climb_density = ride_climb_ft / ride_dist
                 
-                # Difference: Positive = Race is Hiller. Negative = Ride was Hillier.
                 climb_diff = RACE_CLIMB_DENSITY - ride_climb_density
-                
-                # Hill Penalty: 0.4% speed loss per 1 ft/mile difference
                 hill_factor = max(0.5, 1.0 - (climb_diff * 0.004))
                 
-                # 4. FINAL ADJUSTED SPEED
                 final_pred_speed = raw_race_speed * hill_factor
-                
-                if final_pred_speed > 28: final_pred_speed = 28 # Physics cap
+                if final_pred_speed > 28: final_pred_speed = 28 
                 
                 pred_time_hours = RACE_DIST_MILES / final_pred_speed if final_pred_speed > 0 else 0
                 
@@ -609,36 +610,31 @@ with tab1:
                 c1.metric("Predicted Finish (Avg)", format_race_time(avg_pred))
                 c2.metric("Best Potential Finish", format_race_time(best_pred))
                 
-                # Trend Chart
                 fig_race = px.line(
                     pred_df, 
                     x='Date', 
                     y='Predicted Time',
                     markers=True,
-                    title=f"Predicted Time at {race_target_hr} bpm (Adj. for Elevation)",
+                    title=f"Predicted Time at {race_target_hr} bpm (Window: {len(pred_df)} rides)",
                     hover_data=['Ride', 'Climb (ft/mi)', 'Hill Factor']
                 )
                 fig_race.update_layout(yaxis=dict(title="Predicted Time (Hours)", autorange="reversed")) 
                 st.plotly_chart(fig_race, use_container_width=True)
-                
-                st.caption(f"Based on {RACE_DIST_MILES} miles with {race_elev_ft} ft of climbing.")
             else:
                 st.info("Invalid prediction data.")
         else:
-            st.info("Training rides missing Heart Rate data. Cannot predict.")
+            st.info("No rides in this window have Heart Rate data.")
     else:
-        st.info("No recent rides found for prediction.")
+        st.info("No rides found in this date window.")
 
     # --- Efficiency Factor Chart (Robust Manual Trendline) ---
     st.divider()
     st.subheader("Efficiency Factor (EF) Over Time")
     
-    # Filter for valid EF rides
     ef_df = df_display.dropna(subset=['efficiency_factor']).copy()
-    ef_df = ef_df[ef_df['efficiency_factor'] > 0] # Remove zeros
+    ef_df = ef_df[ef_df['efficiency_factor'] > 0] 
     
     if not ef_df.empty:
-        # Calculate simple 5-ride moving average for trend
         ef_df = ef_df.sort_values('start_date_local')
         ef_df['EF_Trend'] = ef_df['efficiency_factor'].rolling(window=5, min_periods=1).mean()
 
@@ -649,10 +645,8 @@ with tab1:
             hover_data=["name", "average_watts", "average_heartrate"],
             labels={"efficiency_factor": "EF (Watts/HR)", "start_date_local": "Date"}
         )
-        # Add the points
         fig_ef.update_traces(marker=dict(size=8, color='green', opacity=0.6))
         
-        # Add the manual trendline
         fig_ef.add_trace(go.Scatter(
             x=ef_df['start_date_local'], 
             y=ef_df['EF_Trend'], 
