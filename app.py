@@ -418,10 +418,27 @@ with st.sidebar:
     ftp_input = st.number_input("Your FTP (Watts)", min_value=100, max_value=500, value=250)
     max_hr_input = st.number_input("Max Heart Rate (bpm)", min_value=100, max_value=220, value=190)
     st.divider()
+    
+    # --- UPDATED: DATE SLIDER ---
     st.header("📅 Time Frame")
-    min_date, max_date = df['date_filter'].min().date(), df['date_filter'].max().date()
+    
+    # Get min and max dates from data
+    min_date = df['date_filter'].min().date()
+    max_date = df['date_filter'].max().date()
+    
+    # Default: Last 90 days or max range available
     default_start = max(min_date, max_date - timedelta(days=90))
-    date_range = st.date_input("Select Range", value=(default_start, max_date), min_value=min_date, max_value=max_date)
+    
+    # Create slider
+    date_range = st.slider(
+        "Select Date Range",
+        min_value=min_date,
+        max_value=max_date,
+        value=(default_start, max_date),
+        format="MM/DD/YY"
+    )
+    # ----------------------------
+    
     if st.button("Log Out"):
         st.session_state.clear()
         st.rerun()
