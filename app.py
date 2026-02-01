@@ -558,6 +558,9 @@ with tab1:
             default_race_hr = int(max_hr_input * 0.85) 
             race_target_hr = st.slider("Target Race HR (bpm)", min_value=100, max_value=max_hr_input, value=default_race_hr)
 
+        # NEW ROW FOR DRAFTING SLIDER
+        draft_factor = st.slider("Drafting Bonus (%) - e.g. 5-10% for group rides", 0, 15, 5, key="draft_factor")
+
         if RACE_DIST_MILES > 0:
             RACE_CLIMB_DENSITY = race_elev_ft / RACE_DIST_MILES
         else:
@@ -571,16 +574,24 @@ with tab1:
             ride_dist = row['distance_miles']
             
             if avg_speed > 5 and avg_hr > 80 and ride_dist > 0:
+                # 1. Base Efficiency
                 base_efficiency = avg_speed / avg_hr
+                
+                # 2. Race HR Projection
                 raw_race_speed = base_efficiency * race_target_hr
                 
+                # 3. Elevation Penalty
                 ride_climb_ft = row['total_elevation_gain'] * 3.28084
                 ride_climb_density = ride_climb_ft / ride_dist
-                
                 climb_diff = RACE_CLIMB_DENSITY - ride_climb_density
                 hill_factor = max(0.5, 1.0 - (climb_diff * 0.004))
                 
-                final_pred_speed = raw_race_speed * hill_factor
+                # 4. Drafting Bonus (NEW)
+                draft_mult = 1 + (draft_factor / 100.0)
+                
+                # 5. Final Speed Calculation
+                final_pred_speed = raw_race_speed * hill_factor * draft_mult
+                
                 if final_pred_speed > 28: final_pred_speed = 28 
                 
                 pred_time_hours = RACE_DIST_MILES / final_pred_speed if final_pred_speed > 0 else 0
